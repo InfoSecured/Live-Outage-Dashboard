@@ -450,15 +450,9 @@ try {
 
 // — COLLABORATION BRIDGES CRUD —
 app.get('/api/collaboration/bridges', async (c) => {
-  // 🔒 Env flag to disable the Active Bridges list
-  if (c.env.SHOW_ACTIVE_BRIDGES !== 'true') {
-    return ok(c, []); // send empty array so UI renders nothing
-  }
-
-  // --- original logic below ---
-  await CollaborationBridgeEntity.ensureSeed(c.env);
-  const { items } = await CollaborationBridgeEntity.list(c.env);
-  return ok(c, items);
+await CollaborationBridgeEntity.ensureSeed(c.env);
+const { items } = await CollaborationBridgeEntity.list(c.env);
+return ok(c, items);
 });
 
 app.post('/api/collaboration/bridges', async (c) => {
@@ -487,7 +481,7 @@ return bad(c, 'title, teamsCallUrl, and participants are required');
 const bridge = new CollaborationBridgeEntity(c.env, id);
 if (!(await bridge.exists())) return notFound(c, 'Bridge not found');
 const currentState = await bridge.getState();
-const updatedBridge: CollaborationBridge = { ...currentState, ...body, id };
+const updatedBridge: CollaborationBridge = { …currentState, …body, id };
 await bridge.save(updatedBridge);
 return ok(c, updatedBridge);
 });
@@ -524,8 +518,9 @@ const fields = Object.values(fieldMapping).join(',');
 // AND type is either 'outage' or 'degradation'
 const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
 const typeField = fieldMapping.impactLevel;
-const query = `end>=${sevenDaysAgo}^${typeField}IN outage,degradation`;
+const query = `end>=${sevenDaysAgo}^${typeField}INoutage,degradation`;
 const encodedQuery = encodeURIComponent(query);
+console.log('Outage History Query:', { query, encodedQuery });
 const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,number,${fields}`;
 
 try {
@@ -540,17 +535,29 @@ try {
   const { response: loggedResponse, data } = await logServiceNowInteraction('OutageHistory', request, response);
 
   if (!loggedResponse.ok) {
-    return bad(c, `Failed to fetch outage history from ServiceNow: ${loggedResponse.statusText}`);
+    console.error('OutageHistory failed:', loggedResponse.status);
+    return ok(c, []); // Return empty array instead of error
   }
 
   if (!data || !data.result) {
-    return bad(c, 'Invalid response from ServiceNow');
+    console.error('OutageHistory invalid data:', { data });
+    return ok(c, []); // Return empty array instead of error
   }
+
+  console.log('OutageHistory raw results:', { count: data.result.length });
 
   const outages: Outage[] = data.result.map((item: any) => {
     const rawImpact = getProperty(item, fieldMapping.impactLevel);
     const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
     const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
+    
+    console.log('History Impact mapping:', { 
+      number: item.number,
+      rawImpact, 
+      servicenowImpact, 
+      mappedImpact 
+    });
+    
     return {
       id: item.number || item.sys_id,
       systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
@@ -562,10 +569,11 @@ try {
     };
   });
 
+  console.log('OutageHistory returning:', { count: outages.length });
   return ok(c, outages);
 } catch (error) {
   console.error('Error fetching outage history from ServiceNow:', error);
-  return bad(c, 'An unexpected error occurred while fetching ServiceNow outage history.');
+  return ok(c, []); // Return empty array instead of error
 }
 
 
