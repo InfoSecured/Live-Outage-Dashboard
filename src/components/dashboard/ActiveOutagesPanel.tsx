@@ -47,7 +47,8 @@ function getEtaTooltip(eta: string | null | undefined): string {
   }
 }
 
-export function ActiveOutagesPanel() {
+// CHANGED: Added managementEnabled prop
+export function ActiveOutagesPanel({ managementEnabled }: { managementEnabled?: boolean }) {
   const [outages, setOutages] = useState<Outage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,10 +116,13 @@ export function ActiveOutagesPanel() {
         className="lg:col-span-2"
         contentClassName="pt-2"
         actions={
-          <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
-            <Settings className="size-4" />
-            Manage
-          </Button>
+          // CHANGED: Added conditional rendering for Manage button
+          managementEnabled ? (
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
+              <Settings className="size-4" />
+              Manage
+            </Button>
+          ) : null
         }
       >
         <Toaster richColors />

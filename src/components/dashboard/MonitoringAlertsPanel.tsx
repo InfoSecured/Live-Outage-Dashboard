@@ -12,18 +12,22 @@ import { Toaster, toast } from '@/components/ui/sonner';
 import { useDashboardStore } from '@/stores/dashboard-store';
 import { useShallow } from 'zustand/react/shallow';
 import { ManageSolarWindsSheet } from './ManageSolarWindsSheet';
-export function MonitoringAlertsPanel() {
+
+// CHANGED: Added managementEnabled prop
+export function MonitoringAlertsPanel({ managementEnabled }: { managementEnabled?: boolean }) {
   const [alerts, setAlerts] = useState<MonitoringAlert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [filter, setFilter] = useState<'all' | 'validated'>('all');
+
   const { searchQuery, refreshCounter } = useDashboardStore(
     useShallow((state) => ({
       searchQuery: state.searchQuery,
       refreshCounter: state.refreshCounter,
     }))
   );
+
   const fetchAlerts = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -39,9 +43,11 @@ export function MonitoringAlertsPanel() {
       setIsLoading(false);
     }
   }, []);
+
   useEffect(() => {
     fetchAlerts();
   }, [refreshCounter, fetchAlerts]);
+
   const filteredAlerts = useMemo(() => {
     return alerts
       .filter(alert => {
@@ -56,7 +62,9 @@ export function MonitoringAlertsPanel() {
         );
       });
   }, [alerts, filter, searchQuery]);
+
   const isNotConfigured = error?.includes('not configured');
+
   return (
     <>
       <DataCard
@@ -70,9 +78,12 @@ export function MonitoringAlertsPanel() {
               <ToggleGroupItem value="all" aria-label="All alerts">All</ToggleGroupItem>
               <ToggleGroupItem value="validated" aria-label="Validated alerts">Validated</ToggleGroupItem>
             </ToggleGroup>
-            <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setIsSheetOpen(true)}>
-              <Settings className="size-4" />
-            </Button>
+            {/* CHANGED: Added conditional rendering for Settings button */}
+            {managementEnabled && (
+              <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setIsSheetOpen(true)}>
+                <Settings className="size-4" />
+              </Button>
+            )}
           </div>
         }
       >
@@ -97,6 +108,7 @@ export function MonitoringAlertsPanel() {
           )}
         </div>
       </DataCard>
+
       <ManageSolarWindsSheet
         isOpen={isSheetOpen}
         onOpenChange={setIsSheetOpen}
@@ -105,6 +117,7 @@ export function MonitoringAlertsPanel() {
     </>
   );
 }
+
 function AlertItem({ alert }: { alert: MonitoringAlert }) {
   return (
     <div className="flex items-start gap-3 text-sm">
@@ -128,6 +141,7 @@ function AlertItem({ alert }: { alert: MonitoringAlert }) {
     </div>
   );
 }
+
 function AlertSkeleton() {
   return (
     <div className="flex items-start gap-3">

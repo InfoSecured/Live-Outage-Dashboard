@@ -10,7 +10,7 @@ import { Toaster, toast } from '@/components/ui/sonner';
 import { useDashboardStore } from '@/stores/dashboard-store';
 import { useShallow } from 'zustand/react/shallow';
 import { ManageVendorsSheet } from './ManageVendorsSheet';
-export function VendorStatusPanel() {
+export function VendorStatusPanel({ managementEnabled }: { managementEnabled?: boolean }) {
   const [statuses, setStatuses] = useState<VendorStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
@@ -48,10 +48,12 @@ export function VendorStatusPanel() {
         className="lg:col-span-1"
         contentClassName="pt-2"
         actions={
-          <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
-            <Settings className="size-4" />
-            Manage
-          </Button>
+          managementEnabled ? (
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
+              <Settings className="size-4" />
+              Manage
+            </Button>
+          ) : null
         }
       >
         <Toaster richColors />

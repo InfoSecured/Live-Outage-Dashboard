@@ -98,13 +98,33 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     }, 500);
   });
 
+  // ADDED: Config endpoint to check if management is enabled
+  app.get('/api/config', (c) => {
+    const enableManagement = c.env.ENABLE_MANAGEMENT === 'true';
+    return c.json({
+      enableManagement,
+    });
+  });
+
+  // ADDED: Middleware to check if management features are enabled
+  const checkManagementEnabled = async (c: any, next: any) => {
+    const enableManagement = c.env.ENABLE_MANAGEMENT === 'true';
+    
+    if (!enableManagement) {
+      return c.json({ error: 'Management features are disabled' }, 403);
+    }
+    
+    await next();
+  };
+
   // — VENDOR CRUD —
   app.get('/api/vendors', async (c) => {
     const { items } = await VendorEntity.list(c.env);
     return ok(c, items);
   });
 
-  app.post('/api/vendors', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.post('/api/vendors', checkManagementEnabled, async (c) => {
     const body = await c.req.json<Partial<Vendor>>();
     if (!isStr(body.name) || !isStr(body.url) || !isStr(body.statusType)) {
       return bad(c, 'name, url, and statusType are required');
@@ -122,7 +142,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, newVendor);
   });
 
-  app.put('/api/vendors/:id', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.put('/api/vendors/:id', checkManagementEnabled, async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json<Partial<Vendor>>();
     if (!isStr(body.name) || !isStr(body.url) || !isStr(body.statusType)) {
@@ -143,7 +164,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, updatedVendor);
   });
 
-  app.delete('/api/vendors/:id', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.delete('/api/vendors/:id', checkManagementEnabled, async (c) => {
     const id = c.req.param('id');
     const deleted = await VendorEntity.delete(c.env, id);
     if (!deleted) return notFound(c, 'Vendor not found');
@@ -202,7 +224,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, config);
   });
 
-  app.post('/api/servicenow/config', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.post('/api/servicenow/config', checkManagementEnabled, async (c) => {
     const body = await c.req.json<ServiceNowConfig>();
     const configEntity = new ServiceNowConfigEntity(c.env);
     await configEntity.save(body);
@@ -336,7 +359,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, config);
   });
 
-  app.post('/api/solarwinds/config', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.post('/api/solarwinds/config', checkManagementEnabled, async (c) => {
     const body = await c.req.json<SolarWindsConfig>();
     const configEntity = new SolarWindsConfigEntity(c.env);
     await configEntity.save(body);
@@ -467,7 +491,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, items);
   });
 
-  app.post('/api/collaboration/bridges', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.post('/api/collaboration/bridges', checkManagementEnabled, async (c) => {
     const body = await c.req.json<Partial<CollaborationBridge>>();
     if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== 'number') {
       return bad(c, 'title, teamsCallUrl, and participants are required');
@@ -484,7 +509,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, newBridge);
   });
 
-  app.put('/api/collaboration/bridges/:id', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.put('/api/collaboration/bridges/:id', checkManagementEnabled, async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json<Partial<CollaborationBridge>>();
     if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== 'number') {
@@ -498,7 +524,8 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, updatedBridge);
   });
 
-  app.delete('/api/collaboration/bridges/:id', async (c) => {
+  // MODIFIED: Added checkManagementEnabled middleware
+  app.delete('/api/collaboration/bridges/:id', checkManagementEnabled, async (c) => {
     const id = c.req.param('id');
     const deleted = await CollaborationBridgeEntity.delete(c.env, id);
     if (!deleted) return notFound(c, 'Bridge not found');
@@ -506,101 +533,101 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // — OUTAGE HISTORY (Trends) —
-// Matches SN list filter: **Begin on Last 7 days** AND type IN (degradation,outage)
-app.get('/api/outages/history', async (c) => {
-  const configEntity = new ServiceNowConfigEntity(c.env);
-  const config = await configEntity.getState();
+  // Matches SN list filter: **Begin on Last 7 days** AND type IN (degradation,outage)
+  app.get('/api/outages/history', async (c) => {
+    const configEntity = new ServiceNowConfigEntity(c.env);
+    const config = await configEntity.getState();
 
-  if (!config.enabled || !config.instanceUrl) {
-    return bad(c, 'ServiceNow integration is not configured or enabled.');
-  }
-
-  const username = c.env[config.usernameVar as keyof Env] as string | undefined;
-  const password = c.env[config.passwordVar as keyof Env] as string | undefined;
-
-  if (!username || !password) {
-    return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
-  }
-
-  // Normalize mapping (force 'type' for impact)
-  const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
-  const fieldMapping = { ...rawFieldMapping, impactLevel: 'type' };
-
-  const impactMapping = new Map(
-    impactLevelMapping.map((item) => [item.servicenowValue.toLowerCase(), item.dashboardValue])
-  );
-
-  // ✅ define sevenDaysAgo (bug #1)
-  const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
-  const typeField = fieldMapping.impactLevel; // 'type'
-
-  // Include ongoing (end empty) OR ended within last 7 days
-  const query = `${typeField}INoutage,degradation^${typeField}ISNOTEMPTY^endISEMPTY^ORend>=${sevenDaysAgo}`;
-  const encodedQuery = encodeURIComponent(query);
-
-  // build fields
-  const requestedFields = new Set<string>(['sys_id', 'number', ...Object.values(fieldMapping)]);
-  const fieldsParam = Array.from(requestedFields).join(',');
-
-  const url =
-    `${config.instanceUrl}/api/now/table/${outageTable}` +
-    `?sysparm_display_value=true` +
-    `&sysparm_query=${encodedQuery}` +
-    `&sysparm_limit=200` +
-    `&sysparm_fields=${fieldsParam}` +
-    `&sysparm_orderby=begin`;
-
-  try {
-    const request = new Request(url, {
-      headers: {
-        Authorization: 'Basic ' + btoa(`${username}:${password}`),
-        Accept: 'application/json',
-      },
-    });
-
-    const response = await fetch(request);
-    const { response: loggedResponse, data } = await logServiceNowInteraction('OutageHistory', request, response);
-
-    if (!loggedResponse.ok) {
-      console.error('OutageHistory failed:', loggedResponse.status);
-      return ok(c, []);
+    if (!config.enabled || !config.instanceUrl) {
+      return bad(c, 'ServiceNow integration is not configured or enabled.');
     }
 
-    if (!data || !data.result) {
-      console.error('OutageHistory invalid data:', { data });
-      return ok(c, []);
+    const username = c.env[config.usernameVar as keyof Env] as string | undefined;
+    const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
+    if (!username || !password) {
+      return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
     }
 
-    const outages: Outage[] = data.result
-      .filter((record: any) => {
-        const rawImpact = getProperty(record, fieldMapping.impactLevel);
-        return rawImpact && String(rawImpact).trim().length > 0;
-      })
-      .map((record: any) => {
-        const rawImpact = getProperty(record, fieldMapping.impactLevel);
-        const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
-        const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
+    // Normalize mapping (force 'type' for impact)
+    const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
+    const fieldMapping = { ...rawFieldMapping, impactLevel: 'type' };
 
-        return {
-          id: record.number || record.sys_id,
-          systemName: getProperty(record, fieldMapping.systemName) || 'Unknown System',
-          impactLevel: mappedImpact as ImpactLevel,
-          startTime: safeParseDate(getProperty(record, fieldMapping.startTime)),
-          // ✅ use 'record' (bug #2) and return "Unknown" when no end
-          eta: (() => {
-            const rawEnd = getProperty(record, fieldMapping.eta);
-            if (!rawEnd || String(rawEnd).trim().length === 0) return 'Unknown';
-            return safeParseDate(rawEnd);
-          })(),
-          description: getProperty(record, fieldMapping.description) || 'No description provided.',
-          teamsBridgeUrl: getProperty(record, fieldMapping.teamsBridgeUrl) || null,
-        };
+    const impactMapping = new Map(
+      impactLevelMapping.map((item) => [item.servicenowValue.toLowerCase(), item.dashboardValue])
+    );
+
+    // ✅ define sevenDaysAgo (bug #1)
+    const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
+    const typeField = fieldMapping.impactLevel; // 'type'
+
+    // Include ongoing (end empty) OR ended within last 7 days
+    const query = `${typeField}INoutage,degradation^${typeField}ISNOTEMPTY^endISEMPTY^ORend>=${sevenDaysAgo}`;
+    const encodedQuery = encodeURIComponent(query);
+
+    // build fields
+    const requestedFields = new Set<string>(['sys_id', 'number', ...Object.values(fieldMapping)]);
+    const fieldsParam = Array.from(requestedFields).join(',');
+
+    const url =
+      `${config.instanceUrl}/api/now/table/${outageTable}` +
+      `?sysparm_display_value=true` +
+      `&sysparm_query=${encodedQuery}` +
+      `&sysparm_limit=200` +
+      `&sysparm_fields=${fieldsParam}` +
+      `&sysparm_orderby=begin`;
+
+    try {
+      const request = new Request(url, {
+        headers: {
+          Authorization: 'Basic ' + btoa(`${username}:${password}`),
+          Accept: 'application/json',
+        },
       });
 
-    return ok(c, outages);
-  } catch (error) {
-    console.error('Error fetching outage history from ServiceNow:', error);
-    return ok(c, []);
-  }
-});
+      const response = await fetch(request);
+      const { response: loggedResponse, data } = await logServiceNowInteraction('OutageHistory', request, response);
+
+      if (!loggedResponse.ok) {
+        console.error('OutageHistory failed:', loggedResponse.status);
+        return ok(c, []);
+      }
+
+      if (!data || !data.result) {
+        console.error('OutageHistory invalid data:', { data });
+        return ok(c, []);
+      }
+
+      const outages: Outage[] = data.result
+        .filter((record: any) => {
+          const rawImpact = getProperty(record, fieldMapping.impactLevel);
+          return rawImpact && String(rawImpact).trim().length > 0;
+        })
+        .map((record: any) => {
+          const rawImpact = getProperty(record, fieldMapping.impactLevel);
+          const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
+          const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
+
+          return {
+            id: record.number || record.sys_id,
+            systemName: getProperty(record, fieldMapping.systemName) || 'Unknown System',
+            impactLevel: mappedImpact as ImpactLevel,
+            startTime: safeParseDate(getProperty(record, fieldMapping.startTime)),
+            // ✅ use 'record' (bug #2) and return "Unknown" when no end
+            eta: (() => {
+              const rawEnd = getProperty(record, fieldMapping.eta);
+              if (!rawEnd || String(rawEnd).trim().length === 0) return 'Unknown';
+              return safeParseDate(rawEnd);
+            })(),
+            description: getProperty(record, fieldMapping.description) || 'No description provided.',
+            teamsBridgeUrl: getProperty(record, fieldMapping.teamsBridgeUrl) || null,
+          };
+        });
+
+      return ok(c, outages);
+    } catch (error) {
+      console.error('Error fetching outage history from ServiceNow:', error);
+      return ok(c, []);
+    }
+  });
 }
