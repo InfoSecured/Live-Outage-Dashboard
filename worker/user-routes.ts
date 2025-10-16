@@ -1,16 +1,16 @@
-import { Hono } from “hono”;
-import type { Env } from ‘./core-utils’;
-import { ok, bad, notFound, isStr, badWithData } from ‘./core-utils’;
-import { MOCK_OUTAGES, MOCK_ALERTS, MOCK_TICKETS, MOCK_OUTAGE_HISTORY } from “@shared/mock-data”;
-import { VendorEntity, ServiceNowConfigEntity, SolarWindsConfigEntity, CollaborationBridgeEntity } from “./entities”;
-import type { Vendor, VendorStatus, VendorStatusOption, ServiceNowConfig, Outage, SolarWindsConfig, MonitoringAlert, AlertSeverity, ServiceNowTicket, CollaborationBridge, ImpactLevel } from “@shared/types”;
-import { format, subDays } from ‘date-fns’;
+import { Hono } from "hono";
+import type { Env } from './core-utils';
+import { ok, bad, notFound, isStr, badWithData } from './core-utils';
+import { MOCK_OUTAGES, MOCK_ALERTS, MOCK_TICKETS, MOCK_OUTAGE_HISTORY } from "@shared/mock-data";
+import { VendorEntity, ServiceNowConfigEntity, SolarWindsConfigEntity, CollaborationBridgeEntity } from "./entities";
+import type { Vendor, VendorStatus, VendorStatusOption, ServiceNowConfig, Outage, SolarWindsConfig, MonitoringAlert, AlertSeverity, ServiceNowTicket, CollaborationBridge, ImpactLevel } from "@shared/types";
+import { format, subDays } from 'date-fns';
 
 // Helper to safely access nested properties from a JSON object
 const getProperty = (obj: any, path: string): any => {
-const value = path.split(’.’).reduce((acc, part) => acc && acc[part], obj);
+const value = path.split('.').reduce((acc, part) => acc && acc[part], obj);
 // Handle ServiceNow reference fields which are returned as objects
-if (typeof value === ‘object’ && value !== null) {
+if (typeof value === 'object' && value !== null) {
 return value.display_value || value.name || value.value || JSON.stringify(value);
 }
 return value;
@@ -33,10 +33,10 @@ return date.toISOString();
 async function logServiceNowInteraction(endpoint: string, request: Request, response: Response): Promise<{ response: Response; data: any }> {
 const sanitizedHeaders: Record<string, string> = {};
 request.headers.forEach((value, key) => {
-if (key.toLowerCase() !== ‘authorization’) {
+if (key.toLowerCase() !== 'authorization') {
 sanitizedHeaders[key] = value;
 } else {
-sanitizedHeaders[key] = ‘[REDACTED]’;
+sanitizedHeaders[key] = '[REDACTED]';
 }
 });
 
@@ -47,7 +47,7 @@ responseHeaders[key] = value;
 });
 
 console.log(JSON.stringify({
-type: ‘ServiceNowAPICall’,
+type: 'ServiceNowAPICall',
 endpoint,
 request: {
 url: request.url,
@@ -84,15 +84,15 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
 // — Aegis Dashboard Routes —
 
 // — VENDOR CRUD —
-app.get(’/api/vendors’, async (c) => {
+app.get('/api/vendors', async (c) => {
 const { items } = await VendorEntity.list(c.env);
 return ok(c, items);
 });
 
-app.post(’/api/vendors’, async (c) => {
+app.post('/api/vendors', async (c) => {
 const body = await c.req.json<Partial<Vendor>>();
 if (!isStr(body.name) || !isStr(body.url) || !isStr(body.statusType)) {
-return bad(c, ‘name, url, and statusType are required’);
+return bad(c, 'name, url, and statusType are required');
 }
 const newVendor: Vendor = {
 id: crypto.randomUUID(),
@@ -107,14 +107,14 @@ await VendorEntity.create(c.env, newVendor);
 return ok(c, newVendor);
 });
 
-app.put(’/api/vendors/:id’, async (c) => {
-const id = c.req.param(‘id’);
+app.put('/api/vendors/:id', async (c) => {
+const id = c.req.param('id');
 const body = await c.req.json<Partial<Vendor>>();
 if (!isStr(body.name) || !isStr(body.url) || !isStr(body.statusType)) {
-return bad(c, ‘name, url, and statusType are required’);
+return bad(c, 'name, url, and statusType are required');
 }
 const vendor = new VendorEntity(c.env, id);
-if (!(await vendor.exists())) return notFound(c, ‘Vendor not found’);
+if (!(await vendor.exists())) return notFound(c, 'Vendor not found');
 const updatedVendor: Vendor = {
 id,
 name: body.name,
@@ -128,42 +128,42 @@ await vendor.save(updatedVendor);
 return ok(c, updatedVendor);
 });
 
-app.delete(’/api/vendors/:id’, async (c) => {
-const id = c.req.param(‘id’);
+app.delete('/api/vendors/:id', async (c) => {
+const id = c.req.param('id');
 const deleted = await VendorEntity.delete(c.env, id);
-if (!deleted) return notFound(c, ‘Vendor not found’);
+if (!deleted) return notFound(c, 'Vendor not found');
 return ok(c, { id, deleted });
 });
 
 // — VENDOR STATUS (Now Dynamic & Resilient) —
-app.get(’/api/vendors/status’, async (c) => {
+app.get('/api/vendors/status', async (c) => {
 const { items: vendors } = await VendorEntity.list(c.env);
 const statusPromises = vendors.map(async (vendor): Promise<VendorStatus> => {
-let status: VendorStatusOption = ‘Operational’;
-if (vendor.statusType === ‘API_JSON’ && vendor.apiUrl && vendor.jsonPath && vendor.expectedValue) {
+let status: VendorStatusOption = 'Operational';
+if (vendor.statusType === 'API_JSON' && vendor.apiUrl && vendor.jsonPath && vendor.expectedValue) {
 try {
 const response = await fetch(vendor.apiUrl, {
-headers: { ‘User-Agent’: ‘AegisDashboard/1.0’ }
+headers: { 'User-Agent': 'AegisDashboard/1.0' }
 });
 if (!response.ok) {
-status = ‘Degraded’; // Status page API is failing
+status = 'Degraded'; // Status page API is failing
 } else {
 const json = await response.json();
 const value = getProperty(json, vendor.jsonPath);
 if (value === undefined) {
-status = ‘Degraded’; // Path not found in JSON
+status = 'Degraded'; // Path not found in JSON
 } else if (String(value) === vendor.expectedValue) {
-status = ‘Operational’;
+status = 'Operational';
 } else {
-status = ‘Outage’;
+status = 'Outage';
 }
 }
 } catch (error) {
 console.error(`Failed to fetch status for ${vendor.name}:`, error);
-status = ‘Degraded’; // Network error or other issue
+status = 'Degraded'; // Network error or other issue
 }
 }
-// For ‘MANUAL’ type, we default to ‘Operational’
+// For 'MANUAL' type, we default to 'Operational'
 return { id: vendor.id, name: vendor.name, url: vendor.url, status };
 });
 const statuses = await Promise.all(statusPromises);
@@ -171,13 +171,13 @@ return ok(c, statuses);
 });
 
 // — SERVICENOW CONFIG —
-app.get(’/api/servicenow/config’, async (c) => {
+app.get('/api/servicenow/config', async (c) => {
 const configEntity = new ServiceNowConfigEntity(c.env);
 const config = await configEntity.getState();
 return ok(c, config);
 });
 
-app.post(’/api/servicenow/config’, async (c) => {
+app.post('/api/servicenow/config', async (c) => {
 const body = await c.req.json<ServiceNowConfig>();
 const configEntity = new ServiceNowConfigEntity(c.env);
 await configEntity.save(body);
@@ -185,9 +185,9 @@ return ok(c, body);
 });
 
 // — ACTIVE OUTAGES (Now Dynamic) - FIXED —
-app.get(’/api/outages/active’, async (c) => {
+app.get('/api/outages/active', async (c) => {
 try {
-console.log(‘Step 1: Starting /api/outages/active request’);
+console.log('Step 1: Starting /api/outages/active request');
 
 
   const configEntity = new ServiceNowConfigEntity(c.env);
@@ -277,13 +277,13 @@ console.log(‘Step 1: Starting /api/outages/active request’);
 });
 
 // — SOLARWINDS CONFIG —
-app.get(’/api/solarwinds/config’, async (c) => {
+app.get('/api/solarwinds/config', async (c) => {
 const configEntity = new SolarWindsConfigEntity(c.env);
 const config = await configEntity.getState();
 return ok(c, config);
 });
 
-app.post(’/api/solarwinds/config’, async (c) => {
+app.post('/api/solarwinds/config', async (c) => {
 const body = await c.req.json<SolarWindsConfig>();
 const configEntity = new SolarWindsConfigEntity(c.env);
 await configEntity.save(body);
@@ -291,7 +291,7 @@ return ok(c, body);
 });
 
 // — MONITORING ALERTS (Now Dynamic) —
-app.get(’/api/monitoring/alerts’, async (c) => {
+app.get('/api/monitoring/alerts', async (c) => {
 const configEntity = new SolarWindsConfigEntity(c.env);
 const config = await configEntity.getState();
 
@@ -353,7 +353,7 @@ try {
 });
 
 // — SERVICENOW TICKETS (Now Dynamic) - FIXED —
-app.get(’/api/servicenow/tickets’, async (c) => {
+app.get('/api/servicenow/tickets', async (c) => {
 const configEntity = new ServiceNowConfigEntity(c.env);
 const config = await configEntity.getState();
 
@@ -414,22 +414,22 @@ try {
 });
 
 // — COLLABORATION BRIDGES CRUD —
-app.get(’/api/collaboration/bridges’, async (c) => {
+app.get('/api/collaboration/bridges', async (c) => {
 await CollaborationBridgeEntity.ensureSeed(c.env);
 const { items } = await CollaborationBridgeEntity.list(c.env);
 return ok(c, items);
 });
 
-app.post(’/api/collaboration/bridges’, async (c) => {
+app.post('/api/collaboration/bridges', async (c) => {
 const body = await c.req.json<Partial<CollaborationBridge>>();
-if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== ‘number’) {
-return bad(c, ‘title, teamsCallUrl, and participants are required’);
+if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== 'number') {
+return bad(c, 'title, teamsCallUrl, and participants are required');
 }
 const newBridge: CollaborationBridge = {
 id: crypto.randomUUID(),
 title: body.title,
 participants: body.participants,
-duration: body.duration || ‘0m’,
+duration: body.duration || '0m',
 isHighSeverity: body.isHighSeverity || false,
 teamsCallUrl: body.teamsCallUrl,
 };
@@ -437,29 +437,29 @@ await CollaborationBridgeEntity.create(c.env, newBridge);
 return ok(c, newBridge);
 });
 
-app.put(’/api/collaboration/bridges/:id’, async (c) => {
-const id = c.req.param(‘id’);
+app.put('/api/collaboration/bridges/:id', async (c) => {
+const id = c.req.param('id');
 const body = await c.req.json<Partial<CollaborationBridge>>();
-if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== ‘number’) {
-return bad(c, ‘title, teamsCallUrl, and participants are required’);
+if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== 'number') {
+return bad(c, 'title, teamsCallUrl, and participants are required');
 }
 const bridge = new CollaborationBridgeEntity(c.env, id);
-if (!(await bridge.exists())) return notFound(c, ‘Bridge not found’);
+if (!(await bridge.exists())) return notFound(c, 'Bridge not found');
 const currentState = await bridge.getState();
 const updatedBridge: CollaborationBridge = { …currentState, …body, id };
 await bridge.save(updatedBridge);
 return ok(c, updatedBridge);
 });
 
-app.delete(’/api/collaboration/bridges/:id’, async (c) => {
-const id = c.req.param(‘id’);
+app.delete('/api/collaboration/bridges/:id', async (c) => {
+const id = c.req.param('id');
 const deleted = await CollaborationBridgeEntity.delete(c.env, id);
-if (!deleted) return notFound(c, ‘Bridge not found’);
+if (!deleted) return notFound(c, 'Bridge not found');
 return ok(c, { id, deleted });
 });
 
 // — OUTAGE HISTORY (Now Dynamic) - FIXED —
-app.get(’/api/outages/history’, async (c) => {
+app.get('/api/outages/history', async (c) => {
 const configEntity = new ServiceNowConfigEntity(c.env);
 const config = await configEntity.getState();
 
