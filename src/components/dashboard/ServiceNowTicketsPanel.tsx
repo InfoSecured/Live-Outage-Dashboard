@@ -10,23 +10,28 @@ import { Toaster, toast } from '@/components/ui/sonner';
 import { useDashboardStore } from '@/stores/dashboard-store';
 import { useShallow } from 'zustand/react/shallow';
 import { ManageServiceNowSheet } from './ManageServiceNowSheet';
+
 const statusColors: Record<TicketStatus, string> = {
   'New': 'bg-blue-500/20 text-blue-400 border-blue-500/30',
   'In Progress': 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
   'On Hold': 'bg-gray-500/20 text-gray-400 border-gray-500/30',
   'Resolved': 'bg-green-500/20 text-green-400 border-green-500/30',
 };
-export function ServiceNowTicketsPanel() {
+
+// CHANGED: Added managementEnabled prop
+export function ServiceNowTicketsPanel({ managementEnabled }: { managementEnabled?: boolean }) {
   const [tickets, setTickets] = useState<ServiceNowTicket[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+
   const { searchQuery, refreshCounter } = useDashboardStore(
     useShallow((state) => ({
       searchQuery: state.searchQuery,
       refreshCounter: state.refreshCounter,
     }))
   );
+
   const fetchTickets = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -42,9 +47,11 @@ export function ServiceNowTicketsPanel() {
       setIsLoading(false);
     }
   }, []);
+
   useEffect(() => {
     fetchTickets();
   }, [refreshCounter, fetchTickets]);
+
   const filteredTickets = useMemo(() => {
     return tickets.filter(ticket => {
       const query = searchQuery.toLowerCase();
@@ -55,7 +62,9 @@ export function ServiceNowTicketsPanel() {
       );
     });
   }, [tickets, searchQuery]);
+
   const isNotConfigured = error?.includes('not configured');
+
   return (
     <>
       <DataCard
@@ -64,10 +73,13 @@ export function ServiceNowTicketsPanel() {
         className="lg:col-span-1"
         contentClassName="pt-2"
         actions={
-          <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
-            <Settings className="size-4" />
-            Manage
-          </Button>
+          // CHANGED: Added conditional rendering for Manage button
+          managementEnabled ? (
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
+              <Settings className="size-4" />
+              Manage
+            </Button>
+          ) : null
         }
       >
         <Toaster richColors />
@@ -91,6 +103,7 @@ export function ServiceNowTicketsPanel() {
           )}
         </div>
       </DataCard>
+
       <ManageServiceNowSheet
         isOpen={isSheetOpen}
         onOpenChange={setIsSheetOpen}
@@ -102,6 +115,7 @@ export function ServiceNowTicketsPanel() {
     </>
   );
 }
+
 function TicketItem({ ticket }: { ticket: ServiceNowTicket }) {
   return (
     <div className="text-sm">
@@ -116,6 +130,7 @@ function TicketItem({ ticket }: { ticket: ServiceNowTicket }) {
     </div>
   );
 }
+
 function TicketSkeleton() {
   return (
     <div className="space-y-1.5">
