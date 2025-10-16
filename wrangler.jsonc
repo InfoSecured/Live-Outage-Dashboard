@@ -4,7 +4,7 @@
  */
  {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "v1-aegis-outage-dashboa-2cecf578-6d3c-4ae6-aff0-0571f33d7360",
+	"name": "status-page-dashboard",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-04-24",
 	"assets": {
