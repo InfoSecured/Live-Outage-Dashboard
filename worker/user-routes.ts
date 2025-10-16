@@ -532,10 +532,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
 
     // === Query: begin BETWEEN last-7-days window AND type IN degradation,outage ===
     const typeField = fieldMapping.impactLevel; // normalized to 'type'
-    const query =
-      `beginBETWEENjavascript:gs.beginningOfLast7Days()` +
-      `@javascript:gs.endOfLast7Days()` +
-      `^${typeField}INdegradation,outage`;
+    const query = `${typeField}INoutage,degradation^${typeField}ISNOTEMPTY^endISEMPTY^ORend>=${sevenDaysAgo}`;
     const encodedQuery = encodeURIComponent(query);
 
     // Build a deduped fields list and always include 'sys_id' + 'number'
