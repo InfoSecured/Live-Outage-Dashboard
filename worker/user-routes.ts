@@ -523,12 +523,12 @@ const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowVal
 const fields = Object.values(fieldMapping).join(',');
 
 // ServiceNow query for records where 'end' time is in the last 7 days
-// AND type is either 'outage' or 'degradation'
+// AND type is either 'outage' or 'degradation' (and NOT empty)
 const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
 const typeField = fieldMapping.impactLevel;
-const query = `end>=${sevenDaysAgo}^${typeField}INoutage,degradation`;
+const query = `end>=${sevenDaysAgo}^${typeField}INoutage,degradation^${typeField}ISNOTEMPTY`;
 const encodedQuery = encodeURIComponent(query);
-console.log('Outage History Query:', { query, encodedQuery });
+console.log('Outage History Query:', { query, encodedQuery, typeField });
 const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,number,${fields}`;
 
 try {
@@ -554,8 +554,20 @@ try {
 
   console.log('OutageHistory raw results:', { count: data.result.length });
 
+  // Filter out records with empty impact level on the application side as well
   const outages: Outage[] = data.result.map((item: any) => {
     const rawImpact = getProperty(item, fieldMapping.impactLevel);
+    const hasValidImpact = rawImpact && String(rawImpact).trim().length > 0;
+      if (!hasValidImpact) {
+        console.log('Filtering out record with empty impact:', {
+          number: item.number,
+          rawImpact
+        });
+      }
+      return hasValidImpact;
+    })
+    .map((item: any) => {
+      const rawImpact = getProperty(item, fieldMapping.impactLevel);
     const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
     const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
     
@@ -577,7 +589,7 @@ try {
     };
   });
 
-  console.log('OutageHistory returning:', { count: outages.length });
+  console.log('OutageHistory after filtering:', { count: outages.length });
   return ok(c, outages);
 } catch (error) {
   console.error('Error fetching outage history from ServiceNow:', error);
