@@ -446,7 +446,7 @@ return bad(c, 'title, teamsCallUrl, and participants are required');
 const bridge = new CollaborationBridgeEntity(c.env, id);
 if (!(await bridge.exists())) return notFound(c, 'Bridge not found');
 const currentState = await bridge.getState();
-const updatedBridge: CollaborationBridge = { …currentState, …body, id };
+const updatedBridge: CollaborationBridge = { ...currentState, ...body, id };
 await bridge.save(updatedBridge);
 return ok(c, updatedBridge);
 });
