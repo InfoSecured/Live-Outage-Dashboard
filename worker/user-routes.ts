@@ -150,7 +150,7 @@ if (!deleted) return notFound(c, 'Vendor not found');
 return ok(c, { id, deleted });
 });
 
-// — VENDOR STATUS (Now Dynamic & Resilient) —
+// — VENDOR STATUS (Now Dynamic & Resilient & Sorted) —
 app.get('/api/vendors/status', async (c) => {
 const { items: vendors } = await VendorEntity.list(c.env);
 const statusPromises = vendors.map(async (vendor): Promise<VendorStatus> => {
@@ -182,7 +182,20 @@ status = 'Degraded'; // Network error or other issue
 return { id: vendor.id, name: vendor.name, url: vendor.url, status };
 });
 const statuses = await Promise.all(statusPromises);
-return ok(c, statuses);
+
+
+// Sort: Outage first, then Degraded, then Operational (alphabetically within each group)
+const sortedStatuses = statuses.sort((a, b) => {
+  const statusOrder = { 'Outage': 0, 'Degraded': 1, 'Operational': 2 };
+  const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+  if (statusDiff !== 0) return statusDiff;
+  // Within same status, sort alphabetically by name
+  return a.name.localeCompare(b.name);
+});
+
+return ok(c, sortedStatuses);
+
+
 });
 
 // — SERVICENOW CONFIG —
@@ -231,15 +244,7 @@ console.log('Step 1: Starting /api/outages/active request');
     return ok(c, []);
   }
 
-  //const { outageTable, fieldMapping, impactLevelMapping } = config;
-  const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
-
-  // normalize field mapping to force-correct any stale 'u_impact_level' entry
-  const fieldMapping = {
-    ...rawFieldMapping,
-    impactLevel: 'type'
-  };
-  
+  const { outageTable, fieldMapping, impactLevelMapping } = config;
   console.log('Step 6: Got field mappings', { outageTable, fieldMappingKeys: Object.keys(fieldMapping) });
   
   const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue]));
@@ -555,39 +560,40 @@ try {
   console.log('OutageHistory raw results:', { count: data.result.length });
 
   // Filter out records with empty impact level on the application side as well
-  const outages: Outage[] = data.result.map((item: any) => {
-    const rawImpact = getProperty(item, fieldMapping.impactLevel);
-    const hasValidImpact = rawImpact && String(rawImpact).trim().length > 0;
+  const outages: Outage[] = data.result
+    .filter((item: any) => {
+      const rawImpact = getProperty(item, fieldMapping.impactLevel);
+      const hasValidImpact = rawImpact && String(rawImpact).trim().length > 0;
       if (!hasValidImpact) {
-        console.log('Filtering out record with empty impact:', {
-          number: item.number,
-          rawImpact
+        console.log('Filtering out record with empty impact:', { 
+          number: item.number, 
+          rawImpact 
         });
       }
       return hasValidImpact;
     })
     .map((item: any) => {
       const rawImpact = getProperty(item, fieldMapping.impactLevel);
-    const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
-    const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
-    
-    console.log('History Impact mapping:', { 
-      number: item.number,
-      rawImpact, 
-      servicenowImpact, 
-      mappedImpact 
+      const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
+      const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
+      
+      console.log('History Impact mapping:', { 
+        number: item.number,
+        rawImpact, 
+        servicenowImpact, 
+        mappedImpact 
+      });
+      
+      return {
+        id: item.number || item.sys_id,
+        systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
+        impactLevel: mappedImpact as ImpactLevel,
+        startTime: safeParseDate(getProperty(item, fieldMapping.startTime)),
+        eta: safeParseDate(getProperty(item, fieldMapping.eta)),
+        description: getProperty(item, fieldMapping.description) || 'No description provided.',
+        teamsBridgeUrl: getProperty(item, fieldMapping.teamsBridgeUrl) || null,
+      };
     });
-    
-    return {
-      id: item.number || item.sys_id,
-      systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
-      impactLevel: mappedImpact as ImpactLevel,
-      startTime: safeParseDate(getProperty(item, fieldMapping.startTime)),
-      eta: safeParseDate(getProperty(item, fieldMapping.eta)),
-      description: getProperty(item, fieldMapping.description) || 'No description provided.',
-      teamsBridgeUrl: getProperty(item, fieldMapping.teamsBridgeUrl) || null,
-    };
-  });
 
   console.log('OutageHistory after filtering:', { count: outages.length });
   return ok(c, outages);
