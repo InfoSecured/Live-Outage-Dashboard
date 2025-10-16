@@ -506,112 +506,101 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // — OUTAGE HISTORY (Trends) —
-  // Matches SN list filter: **Begin on Last 7 days** AND type IN (degradation,outage)
-  app.get('/api/outages/history', async (c) => {
-    const configEntity = new ServiceNowConfigEntity(c.env);
-    const config = await configEntity.getState();
+// Matches SN list filter: **Begin on Last 7 days** AND type IN (degradation,outage)
+app.get('/api/outages/history', async (c) => {
+  const configEntity = new ServiceNowConfigEntity(c.env);
+  const config = await configEntity.getState();
 
-    if (!config.enabled || !config.instanceUrl) {
-      return bad(c, 'ServiceNow integration is not configured or enabled.');
+  if (!config.enabled || !config.instanceUrl) {
+    return bad(c, 'ServiceNow integration is not configured or enabled.');
+  }
+
+  const username = c.env[config.usernameVar as keyof Env] as string | undefined;
+  const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
+  if (!username || !password) {
+    return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
+  }
+
+  // Normalize mapping (force 'type' for impact)
+  const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
+  const fieldMapping = { ...rawFieldMapping, impactLevel: 'type' };
+
+  const impactMapping = new Map(
+    impactLevelMapping.map((item) => [item.servicenowValue.toLowerCase(), item.dashboardValue])
+  );
+
+  // ✅ define sevenDaysAgo (bug #1)
+  const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
+  const typeField = fieldMapping.impactLevel; // 'type'
+
+  // Include ongoing (end empty) OR ended within last 7 days
+  const query = `${typeField}INoutage,degradation^${typeField}ISNOTEMPTY^endISEMPTY^ORend>=${sevenDaysAgo}`;
+  const encodedQuery = encodeURIComponent(query);
+
+  // build fields
+  const requestedFields = new Set<string>(['sys_id', 'number', ...Object.values(fieldMapping)]);
+  const fieldsParam = Array.from(requestedFields).join(',');
+
+  const url =
+    `${config.instanceUrl}/api/now/table/${outageTable}` +
+    `?sysparm_display_value=true` +
+    `&sysparm_query=${encodedQuery}` +
+    `&sysparm_limit=200` +
+    `&sysparm_fields=${fieldsParam}` +
+    `&sysparm_orderby=begin`;
+
+  try {
+    const request = new Request(url, {
+      headers: {
+        Authorization: 'Basic ' + btoa(`${username}:${password}`),
+        Accept: 'application/json',
+      },
+    });
+
+    const response = await fetch(request);
+    const { response: loggedResponse, data } = await logServiceNowInteraction('OutageHistory', request, response);
+
+    if (!loggedResponse.ok) {
+      console.error('OutageHistory failed:', loggedResponse.status);
+      return ok(c, []);
     }
 
-    const username = c.env[config.usernameVar as keyof Env] as string | undefined;
-    const password = c.env[config.passwordVar as keyof Env] as string | undefined;
-
-    if (!username || !password) {
-      return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
+    if (!data || !data.result) {
+      console.error('OutageHistory invalid data:', { data });
+      return ok(c, []);
     }
 
-    // Normalize field mapping to force-correct any stale 'u_impact_level'
-    const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
-    const fieldMapping = { ...rawFieldMapping, impactLevel: 'type' };
+    const outages: Outage[] = data.result
+      .filter((record: any) => {
+        const rawImpact = getProperty(record, fieldMapping.impactLevel);
+        return rawImpact && String(rawImpact).trim().length > 0;
+      })
+      .map((record: any) => {
+        const rawImpact = getProperty(record, fieldMapping.impactLevel);
+        const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
+        const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
 
-    const impactMapping = new Map(
-      impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue])
-    );
-
-    // === Query: begin BETWEEN last-7-days window AND type IN degradation,outage ===
-    const typeField = fieldMapping.impactLevel; // normalized to 'type'
-    const query = `${typeField}INoutage,degradation^${typeField}ISNOTEMPTY^endISEMPTY^ORend>=${sevenDaysAgo}`;
-    const encodedQuery = encodeURIComponent(query);
-
-    // Build a deduped fields list and always include 'sys_id' + 'number'
-    const requestedFields = new Set<string>([
-      'sys_id',
-      'number',
-      ...Object.values(fieldMapping),
-    ]);
-    const fieldsParam = Array.from(requestedFields).join(',');
-
-    const url =
-      `${config.instanceUrl}/api/now/table/${outageTable}` +
-      `?sysparm_display_value=true` +
-      `&sysparm_query=${encodedQuery}` +
-      `&sysparm_limit=200` +
-      `&sysparm_fields=${fieldsParam}` +
-      `&sysparm_orderby=begin`;
-
-    try {
-      const request = new Request(url, {
-        headers: {
-          'Authorization': 'Basic ' + btoa(`${username}:${password}`),
-          'Accept': 'application/json',
-        },
+        return {
+          id: record.number || record.sys_id,
+          systemName: getProperty(record, fieldMapping.systemName) || 'Unknown System',
+          impactLevel: mappedImpact as ImpactLevel,
+          startTime: safeParseDate(getProperty(record, fieldMapping.startTime)),
+          // ✅ use 'record' (bug #2) and return "Unknown" when no end
+          eta: (() => {
+            const rawEnd = getProperty(record, fieldMapping.eta);
+            if (!rawEnd || String(rawEnd).trim().length === 0) return 'Unknown';
+            return safeParseDate(rawEnd);
+          })(),
+          description: getProperty(record, fieldMapping.description) || 'No description provided.',
+          teamsBridgeUrl: getProperty(record, fieldMapping.teamsBridgeUrl) || null,
+        };
       });
 
-      const response = await fetch(request);
-      const { response: loggedResponse, data } =
-        await logServiceNowInteraction('OutageHistory', request, response);
-
-      if (!loggedResponse.ok) {
-        console.error('OutageHistory failed:', loggedResponse.status);
-        return ok(c, []); // Return empty array instead of error
-      }
-
-      if (!data || !data.result) {
-        console.error('OutageHistory invalid data:', { data });
-        return ok(c, []); // Return empty array instead of error
-      }
-
-      // Filter out records with empty impact level just in case
-      const outages: Outage[] = data.result
-        .filter((record: any) => {
-          const rawImpact = getProperty(record, fieldMapping.impactLevel);
-          const hasValidImpact = rawImpact && String(rawImpact).trim().length > 0;
-          if (!hasValidImpact) {
-            console.log('Filtering out record with empty impact:', {
-              number: record.number,
-              rawImpact
-            });
-          }
-          return hasValidImpact;
-        })
-        .map((record: any) => {
-          const rawImpact = getProperty(record, fieldMapping.impactLevel);
-          const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
-          const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
-
-          return {
-            id: record.number || record.sys_id,
-            systemName: getProperty(record, fieldMapping.systemName) || 'Unknown System',
-            impactLevel: mappedImpact as ImpactLevel,
-            startTime: safeParseDate(getProperty(record, fieldMapping.startTime)),
-            eta: (() => {
-              const rawEnd = getProperty(item, fieldMapping.eta);
-              if (!rawEnd || String(rawEnd).trim().length === 0) {
-                return 'Unknown';
-              }
-              return safeParseDate(rawEnd);
-            })(),
-            description: getProperty(record, fieldMapping.description) || 'No description provided.',
-            teamsBridgeUrl: getProperty(record, fieldMapping.teamsBridgeUrl) || null,
-          };
-        });
-
-      return ok(c, outages);
-    } catch (error) {
-      console.error('Error fetching outage history from ServiceNow:', error);
-      return ok(c, []); // Return empty array instead of error
-    }
-  });
+    return ok(c, outages);
+  } catch (error) {
+    console.error('Error fetching outage history from ServiceNow:', error);
+    return ok(c, []);
+  }
+});
 }
