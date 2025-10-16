@@ -321,7 +321,6 @@ app.get('/api/outages/active', async (c) => {
 });
 
 
-});
 
 // — SOLARWINDS CONFIG —
 app.get('/api/solarwinds/config', async (c) => {
