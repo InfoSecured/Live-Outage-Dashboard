@@ -6,6 +6,24 @@ import { VendorEntity, ServiceNowConfigEntity, SolarWindsConfigEntity, Collabora
 import type { Vendor, VendorStatus, VendorStatusOption, ServiceNowConfig, Outage, SolarWindsConfig, MonitoringAlert, AlertSeverity, ServiceNowTicket, CollaborationBridge, ImpactLevel } from "@shared/types";
 import { format, subDays } from 'date-fns';
 
+// Enables management via environment variable
+app.get('/api/config', (c) => {
+  const enableManagement = c.env.ENABLE_MANAGEMENT === 'true';
+  return c.json({
+    enableManagement,
+  });
+});
+
+const checkManagementEnabled = async (c: any, next: any) => {
+  const enableManagement = c.env.ENABLE_MANAGEMENT === 'true';
+  
+  if (!enableManagement) {
+    return c.json({ error: 'Management features are disabled' }, 403);
+  }
+  
+  await next();
+};
+
 // Helper to safely access nested properties from a JSON object
 const getProperty = (objectData: any, path: string): any => {
   const value = path.split('.').reduce((accumulator, part) => accumulator && accumulator[part], objectData);
