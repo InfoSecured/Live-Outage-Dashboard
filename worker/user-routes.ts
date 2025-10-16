@@ -5,6 +5,7 @@ import { MOCK_OUTAGES, MOCK_ALERTS, MOCK_TICKETS, MOCK_OUTAGE_HISTORY } from "@s
 import { VendorEntity, ServiceNowConfigEntity, SolarWindsConfigEntity, CollaborationBridgeEntity } from "./entities";
 import type { Vendor, VendorStatus, VendorStatusOption, ServiceNowConfig, Outage, SolarWindsConfig, MonitoringAlert, AlertSeverity, ServiceNowTicket, CollaborationBridge, ImpactLevel } from "@shared/types";
 import { format, subDays } from 'date-fns';
+
 // Helper to safely access nested properties from a JSON object
 const getProperty = (obj: any, path: string): any => {
   const value = path.split('.').reduce((acc, part) => acc && acc[part], obj);
@@ -14,6 +15,7 @@ const getProperty = (obj: any, path: string): any => {
   }
   return value;
 };
+
 // Helper to safely parse date strings from APIs
 const safeParseDate = (dateStr: any): string => {
   if (!dateStr) {
@@ -26,8 +28,9 @@ const safeParseDate = (dateStr: any): string => {
   }
   return date.toISOString();
 };
-// New helper for detailed ServiceNow API logging
-async function logServiceNowInteraction(endpoint: string, request: Request, response: Response) {
+
+// FIXED: New helper for detailed ServiceNow API logging
+async function logServiceNowInteraction(endpoint: string, request: Request, response: Response): Promise<{ response: Response; data: any }> {
   const sanitizedHeaders: Record<string, string> = {};
   request.headers.forEach((value, key) => {
     if (key.toLowerCase() !== 'authorization') {
@@ -36,13 +39,13 @@ async function logServiceNowInteraction(endpoint: string, request: Request, resp
       sanitizedHeaders[key] = '[REDACTED]';
     }
   });
+
   const responseBody = await response.text();
   const responseHeaders: Record<string, string> = {};
   response.headers.forEach((value, key) => {
     responseHeaders[key] = value;
   });
-  // We need to clone the response to read the body, as it can only be read once.
-  // The original response is passed back to the caller.
+
   console.log(JSON.stringify({
     type: 'ServiceNowAPICall',
     endpoint,
@@ -58,16 +61,34 @@ async function logServiceNowInteraction(endpoint: string, request: Request, resp
       body: responseBody,
     }
   }, null, 2));
-  // Return a new response from the text body so it can be used by the caller
-  return new Response(responseBody, response);
+
+  // Parse the JSON data and return both the new response and parsed data
+  let parsedData;
+  try {
+    parsedData = JSON.parse(responseBody);
+  } catch (e) {
+    parsedData = null;
+  }
+
+  // Create a new response with the same properties
+  const newResponse = new Response(responseBody, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+
+  return { response: newResponse, data: parsedData };
 }
+
 export function userRoutes(app: Hono<{ Bindings: Env }>) {
   // --- Aegis Dashboard Routes ---
+
   // --- VENDOR CRUD ---
   app.get('/api/vendors', async (c) => {
     const { items } = await VendorEntity.list(c.env);
     return ok(c, items);
   });
+
   app.post('/api/vendors', async (c) => {
     const body = await c.req.json<Partial<Vendor>>();
     if (!isStr(body.name) || !isStr(body.url) || !isStr(body.statusType)) {
@@ -85,6 +106,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     await VendorEntity.create(c.env, newVendor);
     return ok(c, newVendor);
   });
+
   app.put('/api/vendors/:id', async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json<Partial<Vendor>>();
@@ -105,12 +127,14 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     await vendor.save(updatedVendor);
     return ok(c, updatedVendor);
   });
+
   app.delete('/api/vendors/:id', async (c) => {
     const id = c.req.param('id');
     const deleted = await VendorEntity.delete(c.env, id);
     if (!deleted) return notFound(c, 'Vendor not found');
     return ok(c, { id, deleted });
   });
+
   // --- VENDOR STATUS (Now Dynamic & Resilient) ---
   app.get('/api/vendors/status', async (c) => {
     const { items: vendors } = await VendorEntity.list(c.env);
@@ -145,36 +169,44 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     const statuses = await Promise.all(statusPromises);
     return ok(c, statuses);
   });
+
   // --- SERVICENOW CONFIG ---
   app.get('/api/servicenow/config', async (c) => {
     const configEntity = new ServiceNowConfigEntity(c.env);
     const config = await configEntity.getState();
     return ok(c, config);
   });
+
   app.post('/api/servicenow/config', async (c) => {
     const body = await c.req.json<ServiceNowConfig>();
     const configEntity = new ServiceNowConfigEntity(c.env);
     await configEntity.save(body);
     return ok(c, body);
   });
-  // --- ACTIVE OUTAGES (Now Dynamic) ---
+
+  // --- ACTIVE OUTAGES (Now Dynamic) - FIXED ---
   app.get('/api/outages/active', async (c) => {
     const configEntity = new ServiceNowConfigEntity(c.env);
     const config = await configEntity.getState();
+
     if (!config.enabled || !config.instanceUrl) {
       return bad(c, 'ServiceNow integration is not configured or enabled.');
     }
+
     const username = c.env[config.usernameVar as keyof Env] as string | undefined;
     const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
     if (!username || !password) {
       return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
     }
+
     const { outageTable, fieldMapping, impactLevelMapping } = config;
     const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue]));
     const fields = Object.values(fieldMapping).join(',');
     const query = 'active=true';
     const encodedQuery = encodeURIComponent(query);
     const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,${fields}`;
+
     try {
       const request = new Request(url, {
         headers: {
@@ -182,13 +214,19 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           'Accept': 'application/json',
         },
       });
-      let response = await fetch(request.clone() as any);
-      response = await logServiceNowInteraction('ActiveOutages', request, response);
-      if (!response.ok) {
-        return bad(c, `Failed to fetch from ServiceNow: ${response.statusText}`);
+
+      const response = await fetch(request);
+      const { response: loggedResponse, data } = await logServiceNowInteraction('ActiveOutages', request, response);
+
+      if (!loggedResponse.ok) {
+        return bad(c, `Failed to fetch from ServiceNow: ${loggedResponse.statusText}`);
       }
-      const { result } = await response.json<{ result: any[] }>();
-      const outages: Outage[] = result.map(item => {
+
+      if (!data || !data.result) {
+        return bad(c, 'Invalid response from ServiceNow');
+      }
+
+      const outages: Outage[] = data.result.map((item: any) => {
         const servicenowImpact = String(getProperty(item, fieldMapping.impactLevel) || '').toLowerCase();
         const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
         return {
@@ -201,38 +239,47 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           teamsBridgeUrl: getProperty(item, fieldMapping.teamsBridgeUrl) || null,
         };
       });
+
       return ok(c, outages);
     } catch (error) {
       console.error('Error fetching from ServiceNow:', error);
       return bad(c, 'An unexpected error occurred while fetching ServiceNow data.');
     }
   });
+
   // --- SOLARWINDS CONFIG ---
   app.get('/api/solarwinds/config', async (c) => {
     const configEntity = new SolarWindsConfigEntity(c.env);
     const config = await configEntity.getState();
     return ok(c, config);
   });
+
   app.post('/api/solarwinds/config', async (c) => {
     const body = await c.req.json<SolarWindsConfig>();
     const configEntity = new SolarWindsConfigEntity(c.env);
     await configEntity.save(body);
     return ok(c, body);
   });
+
   // --- MONITORING ALERTS (Now Dynamic) ---
   app.get('/api/monitoring/alerts', async (c) => {
     const configEntity = new SolarWindsConfigEntity(c.env);
     const config = await configEntity.getState();
+
     if (!config.enabled || !config.apiUrl) {
       return bad(c, 'SolarWinds integration is not configured or enabled.');
     }
+
     const username = c.env[config.usernameVar as keyof Env] as string | undefined;
     const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
     if (!username || !password) {
       return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
     }
+
     const query = "SELECT AlertObjectID, EntityCaption, EntityDetailsUrl, TriggerTimeStamp, Acknowledged, Severity FROM Orion.AlertActive ORDER BY TriggerTimeStamp DESC";
     const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
+
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -242,17 +289,21 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
         },
         body: JSON.stringify({ query }),
       });
+
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`SolarWinds API Error (${response.status}): ${errorText}`);
         return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
       }
+
       const { results } = await response.json<{ results: any[] }>();
+
       const severityMap: Record<number, AlertSeverity> = {
         2: 'Critical',
         3: 'Warning',
         1: 'Info',
       };
+
       const alerts: MonitoringAlert[] = results.map(item => ({
         id: item.AlertObjectID.toString(),
         type: item.EntityCaption,
@@ -261,30 +312,37 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
         severity: severityMap[item.Severity] || 'Info',
         validated: item.Acknowledged,
       }));
+
       return ok(c, alerts);
     } catch (error) {
       console.error('Error fetching from SolarWinds:', error);
       return bad(c, 'An unexpected error occurred while fetching SolarWinds data.');
     }
   });
-  // --- SERVICENOW TICKETS (Now Dynamic) ---
+
+  // --- SERVICENOW TICKETS (Now Dynamic) - FIXED ---
   app.get('/api/servicenow/tickets', async (c) => {
     const configEntity = new ServiceNowConfigEntity(c.env);
     const config = await configEntity.getState();
+
     if (!config.enabled || !config.instanceUrl) {
       return bad(c, 'ServiceNow integration is not configured or enabled.');
     }
+
     const username = c.env[config.usernameVar as keyof Env] as string | undefined;
     const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
     if (!username || !password) {
       return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
     }
+
     const { ticketTable, ticketFieldMapping } = config;
     const fields = Object.values(ticketFieldMapping).join(',');
     const baseQuery = 'stateNOT IN 6,7,8^ORDERBYDESCsys_updated_on';
     const priorityQuery = `^${ticketFieldMapping.priority}=1`;
     const fullQuery = encodeURIComponent(`${baseQuery}${priorityQuery}`);
     const url = `${config.instanceUrl}/api/now/table/${ticketTable}?sysparm_display_value=true&sysparm_query=${fullQuery}&sysparm_limit=20&sysparm_fields=${fields}`;
+
     try {
       const request = new Request(url, {
         headers: {
@@ -292,13 +350,19 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           'Accept': 'application/json',
         },
       });
-      let response = await fetch(request.clone() as any);
-      response = await logServiceNowInteraction('ServiceNowTickets', request, response);
-      if (!response.ok) {
-        return bad(c, `Failed to fetch tickets from ServiceNow: ${response.statusText}`);
+
+      const response = await fetch(request);
+      const { response: loggedResponse, data } = await logServiceNowInteraction('ServiceNowTickets', request, response);
+
+      if (!loggedResponse.ok) {
+        return bad(c, `Failed to fetch tickets from ServiceNow: ${loggedResponse.statusText}`);
       }
-      const { result } = await response.json<{ result: any[] }>();
-      const tickets: ServiceNowTicket[] = result.map(item => ({
+
+      if (!data || !data.result) {
+        return bad(c, 'Invalid response from ServiceNow');
+      }
+
+      const tickets: ServiceNowTicket[] = data.result.map((item: any) => ({
         id: getProperty(item, ticketFieldMapping.id) || 'N/A',
         summary: getProperty(item, ticketFieldMapping.summary) || 'No summary',
         affectedCI: getProperty(item, ticketFieldMapping.affectedCI) || 'N/A',
@@ -306,18 +370,21 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
         assignedTeam: getProperty(item, ticketFieldMapping.assignedTeam) || 'Unassigned',
         ticketUrl: `${config.instanceUrl}/nav_to.do?uri=${ticketTable}.do?sys_id=${item.sys_id}`,
       }));
+
       return ok(c, tickets);
     } catch (error) {
       console.error('Error fetching tickets from ServiceNow:', error);
       return bad(c, 'An unexpected error occurred while fetching ServiceNow tickets.');
     }
   });
+
   // --- COLLABORATION BRIDGES CRUD ---
   app.get('/api/collaboration/bridges', async (c) => {
     await CollaborationBridgeEntity.ensureSeed(c.env);
     const { items } = await CollaborationBridgeEntity.list(c.env);
     return ok(c, items);
   });
+
   app.post('/api/collaboration/bridges', async (c) => {
     const body = await c.req.json<Partial<CollaborationBridge>>();
     if (!isStr(body.title) || !isStr(body.teamsCallUrl) || typeof body.participants !== 'number') {
@@ -334,6 +401,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     await CollaborationBridgeEntity.create(c.env, newBridge);
     return ok(c, newBridge);
   });
+
   app.put('/api/collaboration/bridges/:id', async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json<Partial<CollaborationBridge>>();
@@ -347,32 +415,40 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     await bridge.save(updatedBridge);
     return ok(c, updatedBridge);
   });
+
   app.delete('/api/collaboration/bridges/:id', async (c) => {
     const id = c.req.param('id');
     const deleted = await CollaborationBridgeEntity.delete(c.env, id);
     if (!deleted) return notFound(c, 'Bridge not found');
     return ok(c, { id, deleted });
   });
-  // --- OUTAGE HISTORY (Now Dynamic) ---
+
+  // --- OUTAGE HISTORY (Now Dynamic) - FIXED ---
   app.get('/api/outages/history', async (c) => {
     const configEntity = new ServiceNowConfigEntity(c.env);
     const config = await configEntity.getState();
+
     if (!config.enabled || !config.instanceUrl) {
       return bad(c, 'ServiceNow integration is not configured or enabled.');
     }
+
     const username = c.env[config.usernameVar as keyof Env] as string | undefined;
     const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
     if (!username || !password) {
       return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
     }
+
     const { outageTable, fieldMapping, impactLevelMapping } = config;
     const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue]));
     const fields = Object.values(fieldMapping).join(',');
+    
     // ServiceNow query for records where 'end' time is in the last 7 days.
     const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
     const query = `end>=${sevenDaysAgo}`;
     const encodedQuery = encodeURIComponent(query);
     const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,${fields}`;
+
     try {
       const request = new Request(url, {
         headers: {
@@ -380,13 +456,19 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           'Accept': 'application/json',
         },
       });
-      let response = await fetch(request.clone() as any);
-      response = await logServiceNowInteraction('OutageHistory', request, response);
-      if (!response.ok) {
-        return bad(c, `Failed to fetch outage history from ServiceNow: ${response.statusText}`);
+
+      const response = await fetch(request);
+      const { response: loggedResponse, data } = await logServiceNowInteraction('OutageHistory', request, response);
+
+      if (!loggedResponse.ok) {
+        return bad(c, `Failed to fetch outage history from ServiceNow: ${loggedResponse.statusText}`);
       }
-      const { result } = await response.json<{ result: any[] }>();
-      const outages: Outage[] = result.map(item => {
+
+      if (!data || !data.result) {
+        return bad(c, 'Invalid response from ServiceNow');
+      }
+
+      const outages: Outage[] = data.result.map((item: any) => {
         const servicenowImpact = String(getProperty(item, fieldMapping.impactLevel) || '').toLowerCase();
         const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
         return {
@@ -399,6 +481,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           teamsBridgeUrl: getProperty(item, fieldMapping.teamsBridgeUrl) || null,
         };
       });
+
       return ok(c, outages);
     } catch (error) {
       console.error('Error fetching outage history from ServiceNow:', error);
