@@ -125,31 +125,4 @@ export class CollaborationBridgeEntity extends IndexedEntity<CollaborationBridge
     isHighSeverity: false,
     teamsCallUrl: "",
   };
-
-  static readonly seedData: ReadonlyArray<CollaborationBridge> = [
-    {
-      id: 'bridge-01',
-      title: 'SEV1: API Gateway Latency',
-      participants: 12,
-      duration: '42m',
-      isHighSeverity: true,
-      teamsCallUrl: '#',
-    },
-    {
-      id: 'bridge-02',
-      title: 'SEV2: Auth Service Errors',
-      participants: 7,
-      duration: '1h 15m',
-      isHighSeverity: true,
-      teamsCallUrl: '#',
-    },
-    { 
-      id: 'bridge-03', 
-      title: 'War Room: Database Performance', 
-      participants: 5, 
-      duration: '23m', 
-      isHighSeverity: false, 
-      teamsCallUrl: '#' 
-    },
-  ];
 }
