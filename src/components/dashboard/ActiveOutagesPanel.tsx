@@ -17,15 +17,42 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ManageServiceNowSheet } from './ManageServiceNowSheet';
+
 const impactLevelColors: Record<ImpactLevel, string> = {
   Outage: 'text-red-500 border-red-500/50 bg-red-500/10',
   Degradation: 'text-yellow-500 border-yellow-500/50 bg-yellow-500/10',
 };
+
+/** Null/Unknown-safe label for ETA */
+function getEtaLabel(eta: string | null | undefined): string {
+  if (!eta || eta === 'Unknown') return 'Unknown';
+  const millis = Date.parse(eta);
+  if (Number.isNaN(millis)) return 'Unknown';
+  try {
+    return formatDistanceToNow(new Date(millis));
+  } catch {
+    return 'Unknown';
+  }
+}
+
+/** Returns a tooltip-friendly string for ETA (or 'Unknown') */
+function getEtaTooltip(eta: string | null | undefined): string {
+  if (!eta || eta === 'Unknown') return 'Unknown';
+  const millis = Date.parse(eta);
+  if (Number.isNaN(millis)) return 'Unknown';
+  try {
+    return new Date(millis).toLocaleString();
+  } catch {
+    return 'Unknown';
+  }
+}
+
 export function ActiveOutagesPanel() {
   const [outages, setOutages] = useState<Outage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+
   const { searchQuery, selectedImpactLevels, dateRange, refreshCounter } = useDashboardStore(
     useShallow((state) => ({
       searchQuery: state.searchQuery,
@@ -34,14 +61,15 @@ export function ActiveOutagesPanel() {
       refreshCounter: state.refreshCounter,
     }))
   );
+
   const fetchOutages = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
       const data = await api<Outage[]>('/api/outages/active');
       setOutages(data);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Could not load active outages.';
+    } catch (caught) {
+      const errorMessage = caught instanceof Error ? caught.message : 'Could not load active outages.';
       setError(errorMessage);
       setOutages([]);
       toast.error(errorMessage);
@@ -49,24 +77,36 @@ export function ActiveOutagesPanel() {
       setIsLoading(false);
     }
   }, []);
+
   useEffect(() => {
     fetchOutages();
   }, [refreshCounter, fetchOutages]);
+
   const filteredOutages = useMemo(() => {
-    return outages.filter(outage => {
+    return outages.filter((outage) => {
       const query = searchQuery.toLowerCase();
-      const searchMatch = outage.systemName.toLowerCase().includes(query) ||
-                          outage.description.toLowerCase().includes(query) ||
-                          outage.id.toLowerCase().includes(query);
-      const impactMatch = selectedImpactLevels.size === 0 || selectedImpactLevels.has(outage.impactLevel);
-      const dateMatch = !dateRange?.from || isWithinInterval(parseISO(outage.startTime), {
-        start: dateRange.from,
-        end: dateRange.to || new Date(),
-      });
+      const searchMatch =
+        outage.systemName.toLowerCase().includes(query) ||
+        outage.description.toLowerCase().includes(query) ||
+        outage.id.toLowerCase().includes(query);
+
+      const impactMatch =
+        selectedImpactLevels.size === 0 ||
+        selectedImpactLevels.has(outage.impactLevel);
+
+      const dateMatch =
+        !dateRange?.from ||
+        isWithinInterval(parseISO(outage.startTime), {
+          start: dateRange.from,
+          end: dateRange.to || new Date(),
+        });
+
       return searchMatch && impactMatch && dateMatch;
     });
   }, [outages, searchQuery, selectedImpactLevels, dateRange]);
+
   const isNotConfigured = error?.includes('not configured');
+
   return (
     <>
       <DataCard
@@ -84,7 +124,7 @@ export function ActiveOutagesPanel() {
         <Toaster richColors />
         <div className="space-y-4">
           {isLoading ? (
-            Array.from({ length: 3 }).map((_, i) => <OutageSkeleton key={i} />)
+            Array.from({ length: 3 }).map((_, index) => <OutageSkeleton key={index} />)
           ) : isNotConfigured ? (
             <div className="text-center text-muted-foreground py-8">
               <AlertCircle className="mx-auto size-12 text-yellow-500 mb-4" />
@@ -105,6 +145,7 @@ export function ActiveOutagesPanel() {
           )}
         </div>
       </DataCard>
+
       <ManageServiceNowSheet
         isOpen={isSheetOpen}
         onOpenChange={setIsSheetOpen}
@@ -113,7 +154,11 @@ export function ActiveOutagesPanel() {
     </>
   );
 }
+
 function OutageItem({ outage }: { outage: Outage }) {
+  const etaLabel = getEtaLabel(outage.eta);
+  const etaTooltip = getEtaTooltip(outage.eta);
+
   return (
     <div className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
       <div className="flex flex-col sm:flex-row justify-between sm:items-start gap-4">
@@ -127,47 +172,57 @@ function OutageItem({ outage }: { outage: Outage }) {
           </div>
           <p className="text-sm text-muted-foreground">{outage.description}</p>
         </div>
+
         <div className="flex sm:flex-col items-end sm:items-end gap-2 sm:gap-1 flex-shrink-0">
           <div className={`text-xs font-bold px-2 py-1 rounded-md border ${impactLevelColors[outage.impactLevel]}`}>
             {outage.impactLevel}
           </div>
           {outage.teamsBridgeUrl && (
-            <Button size="sm" variant="secondary" className="gap-2" onClick={() => window.open(outage.teamsBridgeUrl, '_blank')}>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="gap-2"
+              onClick={() => window.open(outage.teamsBridgeUrl as string, '_blank', 'noopener,noreferrer')}
+            >
               <Phone className="size-4" />
               Join Call
             </Button>
           )}
         </div>
       </div>
-      <div className="border-t my-3"></div>
+
+      <div className="border-t my-3" />
+
       <TooltipProvider>
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-1.5 cursor-default">
-                  <Clock className="size-3.5" />
-                  <span>Started {formatDistanceToNow(parseISO(outage.startTime), { addSuffix: true })}</span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>{new Date(outage.startTime).toLocaleString()}</p>
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-1.5 cursor-default">
-                  <span>ETA: {formatDistanceToNow(parseISO(outage.eta))}</span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>{new Date(outage.eta).toLocaleString()}</p>
-              </TooltipContent>
-            </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1.5 cursor-default">
+                <Clock className="size-3.5" />
+                <span>Started {formatDistanceToNow(parseISO(outage.startTime), { addSuffix: true })}</span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{new Date(outage.startTime).toLocaleString()}</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1.5 cursor-default">
+                <span>ETA: {etaLabel}</span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{etaTooltip}</p>
+            </TooltipContent>
+          </Tooltip>
         </div>
       </TooltipProvider>
     </div>
   );
 }
+
 function OutageSkeleton() {
   return (
     <div className="p-4 rounded-lg border">
@@ -184,7 +239,7 @@ function OutageSkeleton() {
           <Skeleton className="h-9 w-28" />
         </div>
       </div>
-      <div className="border-t my-3"></div>
+      <div className="border-t my-3" />
       <div className="flex items-center justify-between">
         <Skeleton className="h-4 w-32" />
         <Skeleton className="h-4 w-24" />
