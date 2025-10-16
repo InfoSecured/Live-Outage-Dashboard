@@ -450,9 +450,15 @@ try {
 
 // — COLLABORATION BRIDGES CRUD —
 app.get('/api/collaboration/bridges', async (c) => {
-await CollaborationBridgeEntity.ensureSeed(c.env);
-const { items } = await CollaborationBridgeEntity.list(c.env);
-return ok(c, items);
+  // 🔒 Env flag to disable the Active Bridges list
+  if (c.env.SHOW_ACTIVE_BRIDGES !== 'true') {
+    return ok(c, []); // send empty array so UI renders nothing
+  }
+
+  // --- original logic below ---
+  await CollaborationBridgeEntity.ensureSeed(c.env);
+  const { items } = await CollaborationBridgeEntity.list(c.env);
+  return ok(c, items);
 });
 
 app.post('/api/collaboration/bridges', async (c) => {
