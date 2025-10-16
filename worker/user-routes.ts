@@ -231,7 +231,15 @@ console.log('Step 1: Starting /api/outages/active request');
     return ok(c, []);
   }
 
-  const { outageTable, fieldMapping, impactLevelMapping } = config;
+  //const { outageTable, fieldMapping, impactLevelMapping } = config;
+  const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
+
+  // normalize field mapping to force-correct any stale 'u_impact_level' entry
+  const fieldMapping = {
+    ...rawFieldMapping,
+    impactLevel: 'type'
+  };
+  
   console.log('Step 6: Got field mappings', { outageTable, fieldMappingKeys: Object.keys(fieldMapping) });
   
   const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue]));
