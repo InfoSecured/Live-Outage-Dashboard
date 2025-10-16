@@ -549,18 +549,22 @@ app.get('/api/outages/history', async (c) => {
   // ^ type IN degradation,outage
   const typeField = fieldMapping.impactLevel; // normalized to 'type'
   const query =
-    `sys_created_onBETWEENjavascript:gs.beginningOfLast7Days()` +
+    `beginBETWEENjavascript:gs.beginningOfLast7Days()` +
     `@javascript:gs.endOfLast7Days()` +
     `^${typeField}INdegradation,outage`;
 
   const encodedQuery = encodeURIComponent(query);
+  const requestedFields = Array.from(new Set<string>([
+    'sys_id', 'number', ...Object.values(fieldMapping),
+  ]));
+  const fieldsParam = requestedFields.join(',');
   const url =
     `${config.instanceUrl}/api/now/table/${outageTable}` +
     `?sysparm_display_value=true` +
     `&sysparm_query=${encodedQuery}` +
     `&sysparm_limit=200` +
     `&sysparm_fields=${fieldsParam}` +
-    `&sysparm_orderby=sys_created_on`;
+    `&sysparm_orderby=begin`;
 
   try {
     const request = new Request(url, {
