@@ -21,6 +21,9 @@ type ChartData = {
   date: string;
   [key: string]: number | string;
 };
+// Normalize system labels so "Printer ", "printer", etc. collapse to one key
+const normalizeSystem = (name: string) => (name || 'Unknown System').trim();
+
 const IMPACT_LEVELS: ImpactLevel[] = ['Outage', 'Degradation'];
 const IMPACT_COLORS: Record<ImpactLevel, string> = {
   Outage: 'hsl(var(--destructive))',
@@ -91,48 +94,74 @@ export function OutageTrendsPanel() {
     toast.success('Outage history exported successfully.');
   };
   const { chartData, keys: dynamicKeys } = useMemo(() => {
-    const dataMap = new Map<string, ChartData>();
-    const sevenDaysAgo = subDays(new Date(), 6);
-    // Initialize data for the last 7 days
-    for (let i = 0; i < 7; i++) {
-      const date = format(subDays(new Date(), 6 - i), 'MMM d');
-      dataMap.set(date, { date });
+  type ChartRow = { dayKey: string; date: string } & Record<string, number>;
+
+  // Last 7 days window (includes today)
+  const sevenDaysAgo = subDays(new Date(), 6);
+
+  // Initialize 7 rows keyed by a stable ISO day (prevents TZ drift)
+  const dataMap = new Map<string, ChartRow>();
+  for (let offset = 6; offset >= 0; offset--) {
+    const day = subDays(new Date(), offset);
+    const dayKey = format(day, 'yyyy-MM-dd');   // stable bucket key
+    const label  = format(day, 'MMM d');        // display label
+    dataMap.set(dayKey, { dayKey, date: label });
+  }
+
+  if (breakdownType === 'impact') {
+    // === By Impact Level (Outage / Degradation) ===
+    const impactKeys = [...IMPACT_LEVELS];
+
+    // Ensure every day has both impact keys initialized to 0
+    dataMap.forEach(row => {
+      impactKeys.forEach(level => { row[level] = 0; });
+    });
+
+    // Count per day per impact level
+    for (const outage of history) {
+      const outageDate = parseISO(outage.startTime);
+      if (outageDate < sevenDaysAgo) continue;
+      const dayKey = format(outageDate, 'yyyy-MM-dd');
+      const row = dataMap.get(dayKey);
+      if (!row) continue;
+      if (impactKeys.includes(outage.impactLevel)) {
+        row[outage.impactLevel] = (row[outage.impactLevel] as number) + 1;
+      }
     }
-    let keys: string[] = [];
-    if (breakdownType === 'impact') {
-      keys = IMPACT_LEVELS;
-      dataMap.forEach(dayData => {
-        keys.forEach(key => dayData[key] = 0);
-      });
-      history.forEach(outage => {
-        const outageDate = parseISO(outage.startTime);
-        if (outageDate >= sevenDaysAgo) {
-          const dateStr = format(outageDate, 'MMM d');
-          const dayData = dataMap.get(dateStr);
-          if (dayData && keys.includes(outage.impactLevel)) {
-            dayData[outage.impactLevel] = (dayData[outage.impactLevel] as number) + 1;
-          }
-        }
-      });
-    } else { // breakdownType === 'system'
-      const systemNames = [...new Set(history.map(h => h.systemName))];
-      keys = systemNames;
-      dataMap.forEach(dayData => {
-        keys.forEach(key => dayData[key] = 0);
-      });
-      history.forEach(outage => {
-        const outageDate = parseISO(outage.startTime);
-        if (outageDate >= sevenDaysAgo) {
-          const dateStr = format(outageDate, 'MMM d');
-          const dayData = dataMap.get(dateStr);
-          if (dayData && keys.includes(outage.systemName)) {
-            dayData[outage.systemName] = (dayData[outage.systemName] as number) + 1;
-          }
-        }
-      });
+
+    return { chartData: Array.from(dataMap.values()), keys: impactKeys };
+  }
+
+  // === By System Name (stacked per day) ===
+  // Collect normalized system names that appear in-window
+  const systemSet = new Set<string>();
+  for (const outage of history) {
+    const outageDate = parseISO(outage.startTime);
+    if (outageDate >= sevenDaysAgo) {
+      systemSet.add(normalizeSystem(outage.systemName));
     }
-    return { chartData: Array.from(dataMap.values()), keys };
-  }, [history, breakdownType]);
+  }
+  const systemKeys = Array.from(systemSet).sort();
+
+  // Initialize every day with all systems at 0 (ensures consistent stacking)
+  dataMap.forEach(row => {
+    systemKeys.forEach(system => { row[system] = 0; });
+  });
+
+  // Count per day per (normalized) system
+  for (const outage of history) {
+    const outageDate = parseISO(outage.startTime);
+    if (outageDate < sevenDaysAgo) continue;
+    const dayKey = format(outageDate, 'yyyy-MM-dd');
+    const row = dataMap.get(dayKey);
+    if (!row) continue;
+    const systemKey = normalizeSystem(outage.systemName);
+    if (typeof row[systemKey] !== 'number') row[systemKey] = 0; // safety
+    row[systemKey] = (row[systemKey] as number) + 1;
+  }
+
+  return { chartData: Array.from(dataMap.values()), keys: systemKeys };
+}, [history, breakdownType]);
   const isNotConfigured = error?.includes('not configured');
   return (
     <DataCard
