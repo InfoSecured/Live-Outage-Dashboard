@@ -199,7 +199,6 @@ await configEntity.save(body);
 return ok(c, body);
 });
 
-
 // — ACTIVE OUTAGES (Now Dynamic) - FIXED —
 app.get('/api/outages/active', async (c) => {
 try {
@@ -269,22 +268,10 @@ console.log('Step 1: Starting /api/outages/active request');
   }
 
   console.log('Step 13: Processing results', { count: data.result.length });
-  const outages: Outage[] = data.result.map((item: any) => { 
+  const outages: Outage[] = data.result.map((item: any) => {
     const rawImpact = getProperty(item, fieldMapping.impactLevel);
     const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
-
-    //const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
-    
-    // Defensive mapping build (already exists above, so keep it)
-    let mappedImpact = impactMapping.get(servicenowImpact);
-
-    // Fallback for partial matches or unexpected values
-    if (!mappedImpact) {
-      if (servicenowImpact.includes('outage')) mappedImpact = 'Outage';
-      else if (servicenowImpact.includes('degradation')) mappedImpact = 'Degradation';
-      else mappedImpact = 'Unknown';
-    }
-
+    const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
     
     console.log('Impact mapping:', { 
       rawImpact, 
@@ -321,8 +308,8 @@ console.log('Step 1: Starting /api/outages/active request');
   }, 500);
 }
 
-});
 
+});
 
 // — SOLARWINDS CONFIG —
 app.get('/api/solarwinds/config', async (c) => {
