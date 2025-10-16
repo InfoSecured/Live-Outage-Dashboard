@@ -244,7 +244,12 @@ console.log('Step 1: Starting /api/outages/active request');
     return ok(c, []);
   }
 
-  const { outageTable, fieldMapping, impactLevelMapping } = config;
+  //const { outageTable, fieldMapping, impactLevelMapping } = config;
+  const { outageTable, fieldMapping: rawFieldMapping, impactLevelMapping } = config;
+  const fieldMapping = {
+    ...rawFieldMapping,
+    impactLevel: 'type'
+  };
   console.log('Step 6: Got field mappings', { outageTable, fieldMappingKeys: Object.keys(fieldMapping) });
   
   const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue]));
@@ -531,7 +536,8 @@ const fields = Object.values(fieldMapping).join(',');
 // AND type is either 'outage' or 'degradation' (and NOT empty)
 const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
 const typeField = fieldMapping.impactLevel;
-const query = `end>=${sevenDaysAgo}^${typeField}INoutage,degradation^${typeField}ISNOTEMPTY`;
+//const query = `end>=${sevenDaysAgo}^${typeField}INoutage,degradation^${typeField}ISNOTEMPTY`;
+const query = `${typeField}INoutage,degradation^${typeField}ISNOTEMPTY^endISEMPTY^ORend>=${sevenDaysAgo}`;
 const encodedQuery = encodeURIComponent(query);
 console.log('Outage History Query:', { query, encodedQuery, typeField });
 const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,number,${fields}`;
