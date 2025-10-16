@@ -299,10 +299,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
           impactLevel: mappedImpact as ImpactLevel,
           startTime: safeParseDate(getProperty(item, fieldMapping.startTime)),
-          eta: (() => {
-            const rawEnd = getProperty(item, fieldMapping.eta);
-            return rawEnd ? safeParseDate(rawEnd) : null;
-          })(),
+          eta: safeParseDate(getProperty(item, fieldMapping.eta)) || 'Unknown',
           description: getProperty(item, fieldMapping.description) || 'No description provided.',
           teamsBridgeUrl: getProperty(item, fieldMapping.teamsBridgeUrl) || null,
         };
