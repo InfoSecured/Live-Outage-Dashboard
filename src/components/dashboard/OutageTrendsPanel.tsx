@@ -95,73 +95,67 @@ export function OutageTrendsPanel() {
   };
   const { chartData, keys: dynamicKeys } = useMemo(() => {
   type ChartRow = { dayKey: string; date: string } & Record<string, number>;
+  const normalizeSystem = (name: string) => (name || 'Unknown System').trim();
 
-  // Last 7 days window (includes today)
+  // 7-day window (today inclusive)
   const sevenDaysAgo = subDays(new Date(), 6);
 
-  // Initialize 7 rows keyed by a stable ISO day (prevents TZ drift)
+  // Stable day buckets
   const dataMap = new Map<string, ChartRow>();
   for (let offset = 6; offset >= 0; offset--) {
     const day = subDays(new Date(), offset);
-    const dayKey = format(day, 'yyyy-MM-dd');   // stable bucket key
-    const label  = format(day, 'MMM d');        // display label
+    const dayKey = format(day, 'yyyy-MM-dd');
+    const label  = format(day, 'MMM d');
     dataMap.set(dayKey, { dayKey, date: label });
   }
 
   if (breakdownType === 'impact') {
-    // === By Impact Level (Outage / Degradation) ===
     const impactKeys = [...IMPACT_LEVELS];
-
-    // Ensure every day has both impact keys initialized to 0
-    dataMap.forEach(row => {
-      impactKeys.forEach(level => { row[level] = 0; });
-    });
-
-    // Count per day per impact level
+    // init zeros
+    dataMap.forEach(row => impactKeys.forEach(k => (row[k] = 0)));
+    // count
     for (const outage of history) {
-      const outageDate = parseISO(outage.startTime);
-      if (outageDate < sevenDaysAgo) continue;
-      const dayKey = format(outageDate, 'yyyy-MM-dd');
+      const dt = parseISO(outage.startTime);
+      if (dt < sevenDaysAgo) continue;
+      const dayKey = format(dt, 'yyyy-MM-dd');
       const row = dataMap.get(dayKey);
       if (!row) continue;
       if (impactKeys.includes(outage.impactLevel)) {
         row[outage.impactLevel] = (row[outage.impactLevel] as number) + 1;
       }
     }
-
     return { chartData: Array.from(dataMap.values()), keys: impactKeys };
   }
 
-  // === By System Name (stacked per day) ===
-  // Collect normalized system names that appear in-window
-  const systemSet = new Set<string>();
+  // === By System Name ===
+  // 1) Build counts
+  const allSystemNames = new Set<string>();
   for (const outage of history) {
-    const outageDate = parseISO(outage.startTime);
-    if (outageDate >= sevenDaysAgo) {
-      systemSet.add(normalizeSystem(outage.systemName));
-    }
-  }
-  const systemKeys = Array.from(systemSet).sort();
-
-  // Initialize every day with all systems at 0 (ensures consistent stacking)
-  dataMap.forEach(row => {
-    systemKeys.forEach(system => { row[system] = 0; });
-  });
-
-  // Count per day per (normalized) system
-  for (const outage of history) {
-    const outageDate = parseISO(outage.startTime);
-    if (outageDate < sevenDaysAgo) continue;
-    const dayKey = format(outageDate, 'yyyy-MM-dd');
+    const dt = parseISO(outage.startTime);
+    if (dt < sevenDaysAgo) continue;
+    const dayKey = format(dt, 'yyyy-MM-dd');
     const row = dataMap.get(dayKey);
     if (!row) continue;
-    const systemKey = normalizeSystem(outage.systemName);
-    if (typeof row[systemKey] !== 'number') row[systemKey] = 0; // safety
-    row[systemKey] = (row[systemKey] as number) + 1;
+    const sys = normalizeSystem(outage.systemName);
+    allSystemNames.add(sys);
+    row[sys] = ((row[sys] as number) || 0) + 1;
   }
 
-  return { chartData: Array.from(dataMap.values()), keys: systemKeys };
+  // 2) Keep only systems that have at least one non-zero in the 7-day window
+  const systemsWithCounts: string[] = Array.from(allSystemNames).filter(sys =>
+    Array.from(dataMap.values()).some(r => (r[sys] as number) > 0)
+  ).sort();
+
+  // 3) Ensure every row has explicit zeros for the final system list (helps Recharts stack)
+  dataMap.forEach(row => {
+    systemsWithCounts.forEach(sys => {
+      if (typeof row[sys] !== 'number') row[sys] = 0;
+    });
+  });
+
+  return { chartData: Array.from(dataMap.values()), keys: systemsWithCounts };
 }, [history, breakdownType]);
+  // THIS ENDS THE useMemo section
   const isNotConfigured = error?.includes('not configured');
   return (
     <DataCard
