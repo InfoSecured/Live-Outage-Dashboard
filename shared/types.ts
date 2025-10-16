@@ -13,7 +13,7 @@ export interface Outage {
   systemName: string;
   impactLevel: ImpactLevel;
   startTime: string; // ISO 8601 string
-  eta: string; // ISO 8601 string
+  eta: string | null; // ISO 8601 string
   teamsBridgeUrl: string | null;
   description: string;
 }
