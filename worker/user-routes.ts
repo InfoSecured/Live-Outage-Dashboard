@@ -299,7 +299,13 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
           systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
           impactLevel: mappedImpact as ImpactLevel,
           startTime: safeParseDate(getProperty(item, fieldMapping.startTime)),
-          eta: safeParseDate(getProperty(item, fieldMapping.eta)) || 'Unknown',
+          eta: (() => {
+            const rawEnd = getProperty(item, fieldMapping.eta);
+            if (!rawEnd || String(rawEnd).trim().length === 0) {
+              return 'Unknown';
+            }
+            return safeParseDate(rawEnd);
+          })(),
           description: getProperty(item, fieldMapping.description) || 'No description provided.',
           teamsBridgeUrl: getProperty(item, fieldMapping.teamsBridgeUrl) || null,
         };
@@ -593,7 +599,13 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
             systemName: getProperty(record, fieldMapping.systemName) || 'Unknown System',
             impactLevel: mappedImpact as ImpactLevel,
             startTime: safeParseDate(getProperty(record, fieldMapping.startTime)),
-            eta: safeParseDate(getProperty(record, fieldMapping.eta)),
+            eta: (() => {
+              const rawEnd = getProperty(item, fieldMapping.eta);
+              if (!rawEnd || String(rawEnd).trim().length === 0) {
+                return 'Unknown';
+              }
+              return safeParseDate(rawEnd);
+            })(),
             description: getProperty(record, fieldMapping.description) || 'No description provided.',
             teamsBridgeUrl: getProperty(record, fieldMapping.teamsBridgeUrl) || null,
           };
