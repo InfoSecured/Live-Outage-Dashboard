@@ -1,4 +1,4 @@
-# Aegis Live Outage Dashboard
+# Live Outage Dashboard
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/J-Lazerus_Ebank/infrastructure.status-page)
 
