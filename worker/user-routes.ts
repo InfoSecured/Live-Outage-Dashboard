@@ -268,8 +268,17 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
 
       console.log('Step 13: Processing results', { count: data.result.length });
       const outages: Outage[] = data.result.map((item: any) => {
-        const servicenowImpact = String(getProperty(item, fieldMapping.impactLevel) || '').toLowerCase();
+        const rawImpact = getProperty(item, fieldMapping.impactLevel);
+        const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
         const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
+        
+        console.log('Impact mapping:', { 
+          rawImpact, 
+          servicenowImpact, 
+          mappedImpact,
+          availableMappings: Array.from(impactMapping.entries())
+        });
+        
         return {
           id: item.number || item.sys_id, // Use 'number' field for display, fallback to sys_id
           systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
@@ -495,11 +504,13 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     const impactMapping = new Map(impactLevelMapping.map(item => [item.servicenowValue.toLowerCase(), item.dashboardValue]));
     const fields = Object.values(fieldMapping).join(',');
     
-    // ServiceNow query for records where 'end' time is in the last 7 days.
+    // ServiceNow query for records where 'end' time is in the last 7 days
+    // AND type is either 'outage' or 'degradation'
     const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
-    const query = `end>=${sevenDaysAgo}`;
+    const typeField = fieldMapping.impactLevel;
+    const query = `end>=${sevenDaysAgo}^${typeField}IN outage,degradation`;
     const encodedQuery = encodeURIComponent(query);
-    const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,${fields}`;
+    const url = `${config.instanceUrl}/api/now/table/${outageTable}?sysparm_display_value=true&sysparm_query=${encodedQuery}&sysparm_fields=sys_id,number,${fields}`;
 
     try {
       const request = new Request(url, {
@@ -521,10 +532,11 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       const outages: Outage[] = data.result.map((item: any) => {
-        const servicenowImpact = String(getProperty(item, fieldMapping.impactLevel) || '').toLowerCase();
+        const rawImpact = getProperty(item, fieldMapping.impactLevel);
+        const servicenowImpact = String(rawImpact || '').toLowerCase().trim();
         const mappedImpact = impactMapping.get(servicenowImpact) || 'Degradation';
         return {
-          id: item.sys_id,
+          id: item.number || item.sys_id,
           systemName: getProperty(item, fieldMapping.systemName) || 'Unknown System',
           impactLevel: mappedImpact as ImpactLevel,
           startTime: safeParseDate(getProperty(item, fieldMapping.startTime)),
