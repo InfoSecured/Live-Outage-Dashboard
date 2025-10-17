@@ -189,10 +189,19 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
             const value = getProperty(json, vendor.jsonPath);
             if (value === undefined) {
               status = 'Degraded'; // Path not found in JSON
-            } else if (String(value) === vendor.expectedValue) {
-              status = 'Operational';
             } else {
-              status = 'Outage';
+              // Split comma-separated expected values and trim spaces
+              const allowedValues = vendor.expectedValue
+                .split(',')
+                .map(v => v.trim().toLowerCase());
+            
+              const actualValue = String(value).toLowerCase().trim();
+            
+              if (allowedValues.includes(actualValue)) {
+                status = 'Operational';
+              } else {
+                status = 'Outage';
+              }
             }
           }
         } catch (error) {
