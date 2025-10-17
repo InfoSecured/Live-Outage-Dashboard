@@ -394,6 +394,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
 
     const query = "SELECT AlertObjectID, EntityCaption, EntityDetailsUrl, TriggerTimeStamp, Acknowledged, Severity FROM Orion.AlertActive ORDER BY TriggerTimeStamp DESC";
     const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
+    const customHeaderValue = c.env.SOLARWINDS_CUSTOM_HEADER
 
     try {
       const response = await fetch(url, {
@@ -401,6 +402,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
         headers: {
           'Authorization': 'Basic ' + btoa(`${username}:${password}`),
           'Content-Type': 'application/json',
+          'X-Tunnel-Code': customHeaderValue,
         },
         body: JSON.stringify({ query }),
       });
