@@ -410,7 +410,7 @@ app.get('/api/monitoring/alerts', async (c) => {
     'Content-Type': 'application/json',
     Accept: 'application/json',
     // Optional custom header via env
-    ...(c.env.SOLARWINDS_CUSTOM_HEADER ? { 'X-Worker-Origin': String(c.env.SOLARWINDS_CUSTOM_HEADER) } : {}),
+    ...(c.env.SOLARWINDS_CUSTOM_HEADER ? { 'X-Tunnel-Code': String(c.env.SOLARWINDS_CUSTOM_HEADER) } : {}),
   });
 
   // SWQL confirmed via curl: join AlertActive + AlertObjects + AlertConfigurations
