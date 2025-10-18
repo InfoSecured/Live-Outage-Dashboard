@@ -713,24 +713,19 @@ app.get('/api/monitoring/alerts', async (c) => {
   });
 
 
-// — Change Control
+// — CHANGES (anything touching “today”), exclude canceled
 app.get('/api/changes/today', async (c) => {
-  const configEntity = new ServiceNowConfigEntity(c.env);
-  const config = await configEntity.getState();
+  const cfgEnt = new ServiceNowConfigEntity(c.env);
+  const cfg = await cfgEnt.getState();
+  if (!cfg.enabled || !cfg.instanceUrl) return bad(c, 'ServiceNow not configured.');
 
-  if (!config.enabled || !config.instanceUrl) {
-    return bad(c, 'ServiceNow integration is not configured or enabled.');
-  }
+  const username = c.env[cfg.usernameVar as keyof Env] as string | undefined;
+  const password = c.env[cfg.passwordVar as keyof Env] as string | undefined;
+  if (!username || !password) return bad(c, 'ServiceNow creds missing.');
 
-  const username = c.env[config.usernameVar as keyof Env] as string | undefined;
-  const password = c.env[config.passwordVar as keyof Env] as string | undefined;
-  if (!username || !password) {
-    return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
-  }
+  const table = cfg.changeTable ?? 'change_request';
 
-  const changeTable = config.changeTable ?? 'change_request';
-
-  // Use the field names you’re actually querying (your log shows start_date/end_date)
+  // Field map (adjust if your instance uses planned_* instead)
   const F = {
     id: 'number',
     summary: 'short_description',
@@ -740,68 +735,81 @@ app.get('/api/changes/today', async (c) => {
     end: 'end_date',
   } as const;
 
-  // Window overlaps “today”: start ≤ EOD AND (end ≥ BOD OR end empty)
-  const query =
-    `${F.start}<=javascript:gs.endOfToday()` +
-    `^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY)` +
-    `^ORDERBY${F.start}`;
-
   const fields = ['sys_id', F.id, F.summary, F.state, F.type, F.start, F.end].join(',');
 
-  // IMPORTANT: request raw values so dates are ISO and parseable
+  // “Occurred today” = start today OR end today OR window overlaps today
+  // ServiceNow encoded query with ORs uses NQ
+  const q =
+    // start_date is within today
+    `${F.start}ONToday@javascript:gs.beginningOfToday()@javascript:gs.endOfToday()` +
+    // OR end_date is within today
+    `^NQ${F.end}ONToday@javascript:gs.beginningOfToday()@javascript:gs.endOfToday()` +
+    // OR window overlaps today (handles open-ended where end is empty)
+    `^NQ(${F.start}<=javascript:gs.endOfToday()^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY))` +
+    // sort
+    `^ORDERBY${F.start}`;
+
+  // IMPORTANT: ask for raw values so dates are ISO
   const url =
-    `${config.instanceUrl}/api/now/table/${changeTable}` +
-    `?sysparm_display_value=false` + // <— key change from your log
-    `&sysparm_query=${encodeURIComponent(query)}` +
+    `${cfg.instanceUrl}/api/now/table/${table}` +
+    `?sysparm_display_value=false` +
+    `&sysparm_query=${encodeURIComponent(q)}` +
     `&sysparm_fields=${encodeURIComponent(fields)}` +
     `&sysparm_limit=200`;
 
   try {
-    const request = new Request(url, {
+    const req = new Request(url, {
       headers: {
         'Authorization': 'Basic ' + btoa(`${username}:${password}`),
         'Accept': 'application/json',
       },
     });
 
-    const response = await fetch(request);
-    const { response: loggedResponse, data } =
-      await logServiceNowInteraction('ChangesToday', request, response);
+    const res = await fetch(req);
+    const { response: loggedRes, data } =
+      await logServiceNowInteraction('ChangesToday', req, res);
 
-    if (!loggedResponse.ok) {
-      return bad(c, `Failed to fetch changes from ServiceNow: ${loggedResponse.statusText}`);
+    if (!loggedRes.ok) {
+      return bad(c, `ServiceNow error: ${loggedRes.statusText}`);
     }
+
     const raw = (data?.result ?? []) as any[];
 
-    // Exclude canceled/cancelled (handle both spellings + numeric states if you later switch to numeric)
-    const isCanceled = (s: unknown) => {
-      if (s == null) return false;
-      const v = String(s).toLowerCase();
-      return v === 'canceled' || v === 'cancelled';
+    // Exclude canceled / cancelled (works for string labels or numeric codes)
+    const CANCEL_LABELS = new Set(['canceled', 'cancelled']);
+    // If your instance’s numeric “Canceled” code is 7 (common), this keeps it out too.
+    // If different, you can set an env var like SNOW_CANCEL_CODES="7,8" and read it here.
+    const CANCEL_CODES = new Set(
+      (c.env.SNOW_CANCEL_CODES ?? '7')
+        .split(',').map(s => s.trim()).filter(Boolean)
+    );
+
+    const notCanceled = (state: unknown) => {
+      if (state == null) return true;
+      const s = String(state).toLowerCase();
+      if (CANCEL_LABELS.has(s)) return false;
+      // numeric string?
+      if (/^-?\d+$/.test(s)) return !CANCEL_CODES.has(s);
+      return true;
     };
 
     const results = raw
-      .filter(r => !isCanceled(r[F.state]))
-      .map(r => {
-        // Ensure ISO strings (when display_value=false, SN returns ISO Z timestamps already)
-        const startISO = r[F.start] ? new Date(r[F.start]).toISOString() : null;
-        const endISO   = r[F.end]   ? new Date(r[F.end]).toISOString()   : null;
-
-        return {
-          id: r[F.id] ?? r.sys_id,
-          number: r[F.id] ?? r.sys_id,
-          summary: r[F.summary] ?? 'No summary',
-          state: r[F.state],
-          type: r[F.type],
-          start: startISO,
-          end: endISO,
-        };
-      });
+      .filter(r => notCanceled(r[F.state]))
+      .map(r => ({
+        id: r[F.id] ?? r.sys_id,
+        number: r[F.id] ?? r.sys_id,
+        summary: r[F.summary] ?? 'No summary',
+        state: r[F.state],
+        type: r[F.type],
+        // With display_value=false, these are ISO already; guard just in case
+        start: r[F.start] ? new Date(r[F.start]).toISOString() : null,
+        end:   r[F.end]   ? new Date(r[F.end]).toISOString()   : null,
+      }));
 
     return ok(c, results);
-  } catch (err) {
-    console.error('Error fetching changes for today:', err);
-    return bad(c, 'Unexpected error fetching changes.');
+  } catch (e) {
+    console.error('SN changes today error:', e);
+    return bad(c, 'Unexpected error fetching ServiceNow changes.');
   }
 });
 }
