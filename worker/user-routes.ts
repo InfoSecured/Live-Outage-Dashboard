@@ -409,6 +409,7 @@ app.get('/api/monitoring/alerts', async (c) => {
     headers['CF-Access-Client-Secret'] = cfSecret;
   }
 
+  // helper to issue one query
   const run = async (query: string) => {
     const resp = await fetch(url, {
       method: 'POST',
@@ -418,10 +419,45 @@ app.get('/api/monitoring/alerts', async (c) => {
     return resp;
   };
 
+  // link builder with optional UI override
+  const uiBase = (c.env as any).SOLARWINDS_UI_BASE || ''; // e.g. https://sw.example.com
+  const toAbsoluteUrl = (maybeUrl?: string | null) => {
+    if (!maybeUrl) return 'N/A';
+
+    // Already absolute?
+    const isAbsolute = /^https?:\/\//i.test(maybeUrl);
+
+    // If override base provided, always use it (preserve path+query from original)
+    if (uiBase) {
+      try {
+        if (isAbsolute) {
+          const original = new URL(maybeUrl);
+          return new URL(`${original.pathname}${original.search}`, uiBase).toString();
+        }
+        // relative + override
+        return new URL(maybeUrl, uiBase).toString();
+      } catch {
+        // fall through
+      }
+    }
+
+    // No override: if absolute, keep it
+    if (isAbsolute) return maybeUrl;
+
+    // Relative + no override: derive base from apiUrl
+    try {
+      const base = new URL(config.apiUrl);
+      return new URL(maybeUrl, `${base.protocol}//${base.host}`).toString();
+    } catch {
+      return maybeUrl;
+    }
+  };
+
   try {
+    // try B first
     let resp = await run(queryB);
 
-    // fallback if TriggeredDateTime doesn’t exist
+    // if schema says “no TriggeredDateTime”, fall back to A
     if (!resp.ok) {
       const txt = await resp.text();
       console.error(`SolarWinds API Error (${resp.status}) on query B: ${txt}`);
@@ -442,37 +478,24 @@ app.get('/api/monitoring/alerts', async (c) => {
     const json = await resp.json() as { results?: any[] };
     let rows = Array.isArray(json.results) ? json.results : [];
 
-    // 🧩 Filter out any excluded captions (from plaintext variable)
+    // Filter out excluded captions via plaintext env var (CSV)
+    // Example value:  "Some noisy thing, some other noisy thing"
     const excludeList = (c.env.SOLARWINDS_EXCLUDE_CAPTIONS ?? "")
       .split(",")
       .map((v) => v.trim().toLowerCase())
       .filter(Boolean);
 
     rows = rows.filter((r) => {
-      const caption = (r.EntityCaption ?? "").toLowerCase();
-      return !excludeList.some((term) =>
-        caption === term || caption.startsWith(term)
-      );
+      const caption = String(r.EntityCaption || '').toLowerCase();
+      return !excludeList.some((term) => caption === term || caption.startsWith(term));
     });
-
-    // Build absolute URLs if SolarWinds returns relative paths
-    const toAbsoluteUrl = (maybeRelative?: string | null) => {
-      if (!maybeRelative) return 'N/A';
-      if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
-      try {
-        const base = new URL(config.apiUrl);
-        return new URL(maybeRelative, `${base.protocol}//${base.host}`).toString();
-      } catch {
-        return maybeRelative;
-      }
-    };
 
     const alerts: MonitoringAlert[] = rows.map((r) => ({
       id: String(r.AlertObjectID),
       type: r.EntityCaption || 'Unknown',
       affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
       timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
-      severity: 'Info',
+      severity: 'Info', // you can enrich later
       validated: Boolean(r.Acknowledged ?? false),
     }));
 
