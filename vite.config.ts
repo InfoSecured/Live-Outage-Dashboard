@@ -3,13 +3,11 @@ import path from "path";
 import react from "@vitejs/plugin-react";
 import { exec } from "node:child_process";
 import pino from "pino";
-import { cloudflare } from "@cloudflare/vite-plugin";
 
 const logger = pino();
 
 const stripAnsi = (str: string) =>
   str.replace(
-    // eslint-disable-next-line no-control-regex -- Allow ANSI escape stripping
     /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
     ""
   );
@@ -28,85 +26,80 @@ const emitLog = (level: "info" | "warn" | "error", rawMessage: string) => {
     return;
   }
 
-  for (const part of parts) {
-    logger[level](part);
-  }
+  for (const part of parts) logger[level](part);
 };
 
-// 3. Create the custom logger for Vite
 const customLogger = {
   warnOnce: (msg: string) => emitLog("warn", msg),
-
-  // Use Pino's methods, passing the cleaned message
   info: (msg: string) => emitLog("info", msg),
   warn: (msg: string) => emitLog("warn", msg),
   error: (msg: string) => emitLog("error", msg),
   hasErrorLogged: () => false,
-
-  // Keep these as-is
   clearScreen: () => {},
   hasWarned: false,
 };
 
 function watchDependenciesPlugin() {
   return {
-    // Plugin to clear caches when dependencies change
     name: "watch-dependencies",
     configureServer(server: any) {
-      const filesToWatch = [
-        path.resolve("package.json"),
-        path.resolve("bun.lock"),
-      ];
-
+      const filesToWatch = [path.resolve("package.json"), path.resolve("bun.lock")];
       server.watcher.add(filesToWatch);
-
       server.watcher.on("change", (filePath: string) => {
         if (filesToWatch.includes(filePath)) {
-          console.log(
-            `\n📦 Dependency file changed: ${path.basename(
-              filePath
-            )}. Clearing caches...`
-          );
-
-          // Run the cache-clearing command
-          exec(
-            "rm -f .eslintcache tsconfig.tsbuildinfo",
-            (err, stdout, stderr) => {
-              if (err) {
-                console.error("Failed to clear caches:", stderr);
-                return;
-              }
-              console.log("✅ Caches cleared successfully.\n");
+          console.log(`\n📦 Dependency file changed: ${path.basename(filePath)}. Clearing caches...`);
+          exec("rm -f .eslintcache tsconfig.tsbuildinfo", (err, _stdout, stderr) => {
+            if (err) {
+              console.error("Failed to clear caches:", stderr);
+              return;
             }
-          );
+            console.log("✅ Caches cleared successfully.\n");
+          });
         }
       });
     },
   };
 }
 
-// https://vite.dev/config/
-export default ({ mode }: { mode: string }) => {
+/**
+ * Export an async config so we can conditionally import the Cloudflare plugin.
+ * This prevents @cloudflare/vite-plugin from being evaluated (and importing miniflare)
+ * in environments where it's not installed (e.g., Netlify).
+ */
+export default defineConfig(async ({ mode }) => {
   const env = loadEnv(mode, process.cwd());
-  return defineConfig({
-    plugins: [react(), cloudflare(), watchDependenciesPlugin()],
+
+  // Detect when to enable the Cloudflare plugin.
+  // Toggle with any of these:
+  //  - CF_PAGES (Cloudflare Pages build env)
+  //  - CF_WORKERS (custom flag)
+  //  - VITE_USE_CF_PLUGIN=true (local override)
+  const useCloudflare =
+    !!process.env.CF_PAGES ||
+    !!process.env.CF_WORKERS ||
+    String(env.VITE_USE_CF_PLUGIN).toLowerCase() === "true";
+
+  const plugins: any[] = [react(), watchDependenciesPlugin()];
+
+  if (useCloudflare) {
+    const { cloudflare } = await import("@cloudflare/vite-plugin");
+    plugins.push(cloudflare());
+  }
+
+  return {
+    plugins,
     build: {
       minify: true,
-      sourcemap: "inline", // Use inline source maps for better error reporting
+      sourcemap: "inline",
       rollupOptions: {
         output: {
-          sourcemapExcludeSources: false, // Include original source in source maps
+          sourcemapExcludeSources: false,
         },
       },
     },
-    customLogger: env.VITE_LOGGER_TYPE === 'json' ? customLogger : undefined,
-    // Enable source maps in development too
-    css: {
-      devSourcemap: true,
-    },
-    server: {
-      allowedHosts: true,
-    },
+    customLogger: env.VITE_LOGGER_TYPE === "json" ? (customLogger as any) : undefined,
+    css: { devSourcemap: true },
+    server: { allowedHosts: true },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
@@ -114,17 +107,13 @@ export default ({ mode }: { mode: string }) => {
       },
     },
     optimizeDeps: {
-      // This is still crucial for reducing the time from when `bun run dev`
-      // is executed to when the server is actually ready.
       include: ["react", "react-dom", "react-router-dom"],
-      exclude: ["agents"], // Exclude agents package from pre-bundling due to Node.js dependencies
+      exclude: ["agents"],
       force: true,
     },
     define: {
-      // Define Node.js globals for the agents package
       global: "globalThis",
     },
-    // Clear cache more aggressively
     cacheDir: "node_modules/.vite",
-  });
-};
+  };
+});
