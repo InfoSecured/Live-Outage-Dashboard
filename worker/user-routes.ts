@@ -733,9 +733,10 @@ app.get('/api/changes/today', async (c) => {
     type: 'type',
     start: 'start_date',
     end: 'end_date',
+    offering: 'service_offering',
   } as const;
 
-  const fields = ['sys_id', F.id, F.summary, F.state, F.type, F.start, F.end].join(',');
+  const fields = ['sys_id', F.id, F.summary, F.state, F.type, F.start, F.end, F.offering].join(',');
 
   // “Occurred today” = starts today OR ends today OR overlaps today
   const q =
@@ -804,11 +805,13 @@ app.get('/api/changes/today', async (c) => {
         const stateLabel = r[F.state]?.display_value ?? r[F.state];
         const typeLabel = r[F.type]?.display_value ?? r[F.type];
         const sysId = r.sys_id?.value ?? r.sys_id;
+        const offering    = labelOf(r[F.offering]);
 
         return {
           id: r[F.id]?.value ?? r[F.id] ?? r.sys_id,
           number: r[F.id]?.display_value ?? r[F.id]?.value ?? r[F.id] ?? r.sys_id,
           title: r[F.summary] ?? 'Change',
+          offering: offering,
           summary: r[F.summary] ?? 'Change',
           state: stateLabel,
           type: typeLabel,
