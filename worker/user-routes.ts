@@ -376,7 +376,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, body);
   });
 
-  // — MONITORING ALERTS (SolarWinds via Tunnel) —
+// — MONITORING ALERTS
 app.get('/api/monitoring/alerts', async (c) => {
   const configEntity = new SolarWindsConfigEntity(c.env);
   const config = await configEntity.getState();
@@ -385,8 +385,7 @@ app.get('/api/monitoring/alerts', async (c) => {
     return bad(c, 'SolarWinds integration is not configured or enabled.');
   }
 
-  // Ensure apiUrl points to your Tunnel host, e.g. "https://sw.easternbank.com"
-  const baseUrl = config.apiUrl.replace(/\/+$/, '');
+  const baseUrl = String(config.apiUrl).replace(/\/+$/, '');
   const url = `${baseUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
   const usernameSecret = c.env[config.usernameVar as keyof Env] as string | undefined;
@@ -396,11 +395,10 @@ app.get('/api/monitoring/alerts', async (c) => {
     return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
   }
 
-  // Trim to avoid stray whitespace
-  const usernameClean = String(usernameSecret).trim();
-  const passwordClean = String(passwordSecret).trim();
+  const usernameClean = usernameSecret.trim();
+  const passwordClean = passwordSecret.trim();
 
-  // Safe Basic auth for non-ASCII
+  // Safe Basic auth (handles non-ASCII)
   const toBasicAuth = (user: string, pass: string): string => {
     const pair = `${user}:${pass}`;
     const latin1 = unescape(encodeURIComponent(pair));
@@ -411,46 +409,44 @@ app.get('/api/monitoring/alerts', async (c) => {
     Authorization: authHeader,
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    ...(c.env.SOLARWINDS_CUSTOM_HEADER
-      ? { 'X-Tunnel-Code': String(c.env.SOLARWINDS_CUSTOM_HEADER) }
-      : {}),
+    // Optional custom header via env
+    ...(c.env.SOLARWINDS_CUSTOM_HEADER ? { 'X-Worker-Origin': String(c.env.SOLARWINDS_CUSTOM_HEADER) } : {}),
   });
 
-  // The query you’ve been using
-  const queryText =
-    "SELECT TOP 50 " +
-  "  aa.AlertObjectID, " +
-  "  ao.EntityCaption, " +
-  "  ao.EntityDetailsUrl, " +
-  "  aa.TriggeredDateTime, " +
-  "  aa.Acknowledged, " +
-  "  ac.Severity " +
-  "FROM Orion.AlertActive AS aa " +
-  "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
-  "JOIN Orion.AlertConfigurations AS ac ON ao.AlertID = ac.AlertID " +
-  "ORDER BY aa.TriggeredDateTime DESC";
+  // SWQL confirmed via curl: join AlertActive + AlertObjects + AlertConfigurations
+  const query = `
+    SELECT TOP 50
+      aa.AlertObjectID,
+      ao.EntityCaption,
+      ao.EntityDetailsUrl,
+      aa.TriggeredDateTime,
+      aa.Acknowledged,
+      ac.Severity
+    FROM Orion.AlertActive AS aa
+    JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID
+    JOIN Orion.AlertConfigurations AS ac ON ao.AlertID = ac.AlertID
+    ORDER BY aa.TriggeredDateTime DESC
+  `.trim();
 
-  // First attempt with provided username format (DOMAIN\user or UPN)
+  // First attempt with provided username (DOMAIN\user or UPN)
   let authHeader = toBasicAuth(usernameClean, passwordClean);
   let response = await fetch(url, {
     method: 'POST',
     headers: buildHeaders(authHeader),
-    body: JSON.stringify({ query: queryText }),
+    body: JSON.stringify({ query }),
   });
 
-  // If SolarWinds doesn’t like DOMAIN\user (400/401), try UPN fallback once
+  // If 400/401, retry once with UPN format if the username looked like DOMAIN\user
   if (!response.ok && (response.status === 400 || response.status === 401)) {
-    const domainMatch = usernameClean.match(/^([^\\]+)\\(.+)$/);
-    if (domainMatch) {
-      const [, domainName, samAccountName] = domainMatch;
-      // Adjust this suffix to your actual UPN, e.g. easternbank.com
-      const upnUsername = `${samAccountName}@${domainName.toLowerCase()}.com`;
-      authHeader = toBasicAuth(upnUsername, passwordClean);
-
+    const m = usernameClean.match(/^([^\\]+)\\(.+)$/);
+    if (m) {
+      const [, domainName, sam] = m;
+      const upn = `${sam}@${domainName.toLowerCase()}.com`; // adjust suffix if needed
+      authHeader = toBasicAuth(upn, passwordClean);
       response = await fetch(url, {
         method: 'POST',
         headers: buildHeaders(authHeader),
-        body: JSON.stringify({ query: queryText }),
+        body: JSON.stringify({ query }),
       });
     }
   }
@@ -461,28 +457,30 @@ app.get('/api/monitoring/alerts', async (c) => {
     return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
   }
 
-  const payload = await response.json<{ results: any[] }>().catch(async () => {
-    const raw = await response.text();
+  // IMPORTANT: don't use an undeclared `results` var — read into payload safely
+  const payload = await response.json<{ results?: any[] }>().catch(async () => {
+    const raw = await response.text().catch(() => '');
     console.error('SolarWinds non-JSON response:', raw);
-    return { results: [] as any[] };
+    return {} as { results?: any[] };
   });
+  const rows = Array.isArray(payload.results) ? payload.results : [];
 
   const severityMap: Record<number, AlertSeverity> = {
-  4: 'Critical',
-  3: 'Warning',
-  2: 'Warning',
-  1: 'Info',
-  0: 'Info',
-};
+    4: 'Critical',
+    3: 'Warning',
+    2: 'Warning',
+    1: 'Info',
+    0: 'Info',
+  };
 
-const alerts: MonitoringAlert[] = results.map((row: any) => ({
-  id: String(row.AlertObjectID),
-  type: row.EntityCaption ?? 'Unknown',
-  affectedSystem: row.EntityDetailsUrl ?? 'N/A',
-  timestamp: new Date(row.TriggeredDateTime).toISOString(),
-  severity: severityMap[row.Severity] ?? 'Info',
-  validated: Boolean(row.Acknowledged),
-}));
+  const alerts: MonitoringAlert[] = rows.map((row: any) => ({
+    id: String(row.AlertObjectID),
+    type: row.EntityCaption ?? 'Unknown',
+    affectedSystem: row.EntityDetailsUrl ?? 'N/A',
+    timestamp: new Date(row.TriggeredDateTime).toISOString(),
+    severity: severityMap[row.Severity] ?? 'Info',
+    validated: Boolean(row.Acknowledged),
+  }));
 
   return ok(c, alerts);
 });
