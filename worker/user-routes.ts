@@ -750,10 +750,15 @@ app.get('/api/changes/today', async (c) => {
   // Robust "today" logic:
   // 1) starts today OR 2) ends today OR 3) overlaps today (start <= EOD AND (end >= BOD OR end empty))
   const q =
-    `${F.start}>=javascript:gs.beginningOfToday()^${F.start}<=javascript:gs.endOfToday()` +
-    `^NQ${F.end}>=javascript:gs.beginningOfToday()^${F.end}<=javascript:gs.endOfToday()` +
-    `^NQ${F.start}<=javascript:gs.endOfToday()^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY)` +
-    `^ORDERBY${F.start}`;
+  // active + state restriction
+  `active=true^stateIN-2,-1,0^` +
+  // overlap via start_date/end_date
+  `${F.start}<=javascript:gs.endOfToday()^${F.end}>=javascript:gs.beginningOfToday()` +
+  // OR overlap via planned_* (covers records that only set planned_*)
+  `^NQactive=true^stateIN-2,-1,0^` +
+  `planned_start_date<=javascript:gs.endOfToday()^planned_end_date>=javascript:gs.beginningOfToday()` +
+  // ordering
+  `^ORDERBY${F.start}`;
 
   const url =
     `${cfg.instanceUrl}/api/now/table/${table}` +
