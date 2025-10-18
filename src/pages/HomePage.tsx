@@ -6,6 +6,7 @@ import { MonitoringAlertsPanel } from '@/components/dashboard/MonitoringAlertsPa
 import { ServiceNowTicketsPanel } from '@/components/dashboard/ServiceNowTicketsPanel';
 import { ActiveCollaborationBridgesPanel } from '@/components/dashboard/ActiveCollaborationBridgesPanel';
 import { OutageTrendsPanel } from '@/components/dashboard/OutageTrendsPanel';
+import { ScheduledChangesPanel } from '@/components/dashboard/ScheduledChangesPanel';
 import { useState, useEffect, useCallback } from 'react';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import RefreshControls from '../components/RefreshControls';
@@ -110,6 +111,7 @@ export function HomePage() {
           {/* Main Content Column */}
           <div className="lg:col-span-2 space-y-6">
             <ActiveOutagesPanel managementEnabled={managementEnabled} />
+            <ScheduledChangesPanel managementEnabled={managementEnabled} />
             <OutageTrendsPanel />
           </div>
           {/* Sidebar Column */}
