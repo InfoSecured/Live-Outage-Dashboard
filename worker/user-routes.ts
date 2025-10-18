@@ -378,122 +378,83 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
 
 // — MONITORING ALERTS (SolarWinds via Tunnel + Cloudflare Access + custom header) —
 app.get('/api/monitoring/alerts', async (c) => {
-  const configEntity = new SolarWindsConfigEntity(c.env);
-  const config = await configEntity.getState();
+  const solarwindsUrl = c.env.SOLARWINDS_API_URL;
+  const username = c.env.SOLARWINDS_USERNAME;
+  const password = c.env.SOLARWINDS_PASSWORD;
+  const xTunnelCode = c.env.X_TUNNEL_CODE;
+  const cfAccessClientId = c.env.CF_ACCESS_CLIENT_ID;
+  const cfAccessClientSecret = c.env.CF_ACCESS_CLIENT_SECRET;
 
-  if (!config.enabled || !config.apiUrl) {
-    return bad(c, 'SolarWinds integration is not configured or enabled.');
-  }
-
-  // Always use the public tunnel hostname on 443 (no :17774 here)
-  const baseUrl = String(config.apiUrl).replace(/\/+$/, '');
-  const url = `${baseUrl}/SolarWinds/InformationService/v3/Json/Query`;
-
-  const usernameSecret = c.env[config.usernameVar as keyof Env] as string | undefined;
-  const passwordSecret = c.env[config.passwordVar as keyof Env] as string | undefined;
-
-  if (!usernameSecret || !passwordSecret) {
-    return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
-  }
-
-  const usernameClean = usernameSecret.trim();
-  const passwordClean = passwordSecret.trim();
-
-  // Safe Basic auth for potential non-ASCII characters
-  const toBasicAuth = (user: string, pass: string): string => {
-    const pair = `${user}:${pass}`;
-    const latin1 = unescape(encodeURIComponent(pair));
-    return 'Basic ' + btoa(latin1);
-  };
-
-  // Optional Cloudflare Access service token headers (if you put the hostname behind Access)
-  const accessHeaders =
-    c.env.CF_ACCESS_CLIENT_ID && c.env.CF_ACCESS_CLIENT_SECRET
-      ? {
-          'CF-Access-Client-Id': String(c.env.CF_ACCESS_CLIENT_ID),
-          'CF-Access-Client-Secret': String(c.env.CF_ACCESS_CLIENT_SECRET),
-        }
-      : {};
-
-  // Build headers (includes your custom header X-Tunnel-Code if provided)
-  const buildHeaders = (authHeader: string): Record<string, string> => ({
-    Authorization: authHeader,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    ...(c.env.SOLARWINDS_CUSTOM_HEADER ? { 'X-Tunnel-Code': String(c.env.SOLARWINDS_CUSTOM_HEADER) } : {}),
-    ...accessHeaders,
-  });
-
-  // SWQL verified in curl
   const query = `
-    SELECT TOP 50
-      aa.AlertObjectID,
-      ao.EntityCaption,
-      ao.EntityDetailsUrl,
-      aa.TriggeredDateTime,
-      aa.Acknowledged,
-      ac.Severity
-    FROM Orion.AlertActive AS aa
-    JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID
-    JOIN Orion.AlertConfigurations AS ac ON ao.AlertID = ac.AlertID
-    ORDER BY aa.TriggeredDateTime DESC
-  `.trim();
+    SELECT 
+      AlertObjectID,
+      DisplayName,
+      Acknowledged,
+      TriggeredOn,
+      ObjectType,
+      ObjectName,
+      RelatedNodeID,
+      RelatedNode.Caption AS NodeCaption,
+      DetailsUrl
+    FROM Orion.Alerts
+    ORDER BY TriggeredOn DESC
+  `;
 
-  // First attempt: whatever username you configured (DOMAIN\user or UPN)
-  let authHeader = toBasicAuth(usernameClean, passwordClean);
-  let response = await fetch(url, {
-    method: 'POST',
-    headers: buildHeaders(authHeader),
-    body: JSON.stringify({ query }),
-  });
-
-  // If auth fails and username looked like DOMAIN\user, retry once as a guessed UPN
-  if (!response.ok && (response.status === 400 || response.status === 401)) {
-    const domainMatch = usernameClean.match(/^([^\\]+)\\(.+)$/);
-    if (domainMatch) {
-      const [, domainName, samAccountName] = domainMatch;
-      const guessedUpn = `${samAccountName}@${domainName.toLowerCase()}.com`; // adjust suffix if needed
-      authHeader = toBasicAuth(guessedUpn, passwordClean);
-      response = await fetch(url, {
-        method: 'POST',
-        headers: buildHeaders(authHeader),
-        body: JSON.stringify({ query }),
-      });
-    }
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => '');
-    console.error(`SolarWinds API Error (${response.status}): ${response.statusText}\n${errorText}`);
-    return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
-  }
-
-  // Parse and guard against undefined 'results'
-  const payload = await response.json<{ results?: any[] }>().catch(async () => {
-    const raw = await response.text().catch(() => '');
-    console.error('SolarWinds non-JSON response:', raw);
-    return {} as { results?: any[] };
-  });
-  const rows = Array.isArray(payload.results) ? payload.results : [];
-
-  const severityMap: Record<number, AlertSeverity> = {
-    4: 'Critical',
-    3: 'Warning',
-    2: 'Warning',
-    1: 'Info',
-    0: 'Info',
+  const headers: Record<string, string> = {
+    'Authorization': 'Basic ' + btoa(`${username}:${password}`),
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
   };
 
-  const alerts: MonitoringAlert[] = rows.map((row: any) => ({
-    id: String(row.AlertObjectID),
-    type: row.EntityCaption ?? 'Unknown',
-    affectedSystem: row.EntityDetailsUrl ?? 'N/A',
-    timestamp: new Date(row.TriggeredDateTime).toISOString(),
-    severity: severityMap[row.Severity] ?? 'Info',
-    validated: Boolean(row.Acknowledged),
-  }));
+  if (xTunnelCode) {
+    headers['X-Tunnel-Code'] = xTunnelCode;
+  }
 
-  return ok(c, alerts);
+  if (cfAccessClientId && cfAccessClientSecret) {
+    headers['CF-Access-Client-Id'] = cfAccessClientId;
+    headers['CF-Access-Client-Secret'] = cfAccessClientSecret;
+  }
+
+  try {
+    const response = await fetch(`${solarwindsUrl}/SolarWinds/InformationService/v3/Json/Query`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query })
+    });
+
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      console.error(`SolarWinds API Error (${response.status}): ${responseText}`);
+      return c.json(
+        { error: `Failed to fetch from SolarWinds: ${response.statusText}`, body: responseText },
+        response.status
+      );
+    }
+
+    let parsed: { results: any[] } = { results: [] };
+    try {
+      parsed = JSON.parse(responseText);
+    } catch (parseErr) {
+      console.error('JSON parse error:', parseErr);
+      return c.json({ error: 'Invalid JSON from SolarWinds' }, 500);
+    }
+
+    const results = parsed.results || [];
+    const alerts = results.map((item) => ({
+      id: item.AlertObjectID,
+      displayName: item.DisplayName || 'Unknown Alert',
+      acknowledged: item.Acknowledged || false,
+      triggeredOn: item.TriggeredOn || null,
+      node: item.NodeCaption || item.RelatedNodeID || 'Unknown Node',
+      detailsUrl: item.DetailsUrl || null
+    }));
+
+    return c.json({ alerts });
+  } catch (error) {
+    console.error('Unexpected error fetching SolarWinds data:', error);
+    return c.json({ error: 'Unexpected error fetching SolarWinds data' }, 500);
+  }
 });
 
   // — SERVICENOW TICKETS (Now Dynamic) - FIXED —
