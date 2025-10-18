@@ -376,66 +376,105 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, body);
   });
 
-  // — MONITORING ALERTS (Now Dynamic) —
-  app.get('/api/monitoring/alerts', async (c) => {
-    const configEntity = new SolarWindsConfigEntity(c.env);
-    const config = await configEntity.getState();
+  // — MONITORING ALERTS (SolarWinds via Tunnel) —
+app.get('/api/monitoring/alerts', async (c) => {
+  const configEntity = new SolarWindsConfigEntity(c.env);
+  const config = await configEntity.getState();
 
-    if (!config.enabled || !config.apiUrl) {
-      return bad(c, 'SolarWinds integration is not configured or enabled.');
-    }
+  if (!config.enabled || !config.apiUrl) {
+    return bad(c, 'SolarWinds integration is not configured or enabled.');
+  }
 
-    const username = c.env[config.usernameVar as keyof Env] as string | undefined;
-    const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+  // Ensure apiUrl points to your Tunnel host, e.g. "https://sw.easternbank.com"
+  const baseUrl = config.apiUrl.replace(/\/+$/, '');
+  const url = `${baseUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
-    if (!username || !password) {
-      return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
-    }
+  const usernameSecret = c.env[config.usernameVar as keyof Env] as string | undefined;
+  const passwordSecret = c.env[config.passwordVar as keyof Env] as string | undefined;
 
-    const query = "SELECT AlertObjectID, EntityCaption, EntityDetailsUrl, TriggerTimeStamp, Acknowledged, Severity FROM Orion.AlertActive ORDER BY TriggerTimeStamp DESC";
-    const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
-    const customHeaderValue = c.env.SOLARWINDS_CUSTOM_HEADER
+  if (!usernameSecret || !passwordSecret) {
+    return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
+  }
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Basic ' + btoa(`${username}:${password}`),
-          'Content-Type': 'application/json',
-          'X-Tunnel-Code': customHeaderValue,
-        },
-        body: JSON.stringify({ query }),
-      });
+  // Trim to avoid stray whitespace
+  const usernameClean = String(usernameSecret).trim();
+  const passwordClean = String(passwordSecret).trim();
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`SolarWinds API Error (${response.status}): ${errorText}`);
-        return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
-      }
+  // Safe Basic auth for non-ASCII
+  const toBasicAuth = (user: string, pass: string): string => {
+    const pair = `${user}:${pass}`;
+    const latin1 = unescape(encodeURIComponent(pair));
+    return 'Basic ' + btoa(latin1);
+  };
 
-      const { results } = await response.json<{ results: any[] }>();
-
-      const severityMap: Record<number, AlertSeverity> = {
-        2: 'Critical',
-        3: 'Warning',
-        1: 'Info',
-      };
-
-      const alerts: MonitoringAlert[] = results.map(item => ({
-        id: item.AlertObjectID.toString(),
-        type: item.EntityCaption,
-        affectedSystem: item.EntityDetailsUrl || 'N/A',
-        timestamp: new Date(item.TriggerTimeStamp).toISOString(),
-        severity: severityMap[item.Severity] || 'Info',
-        validated: item.Acknowledged,
-      }));
-
-      return ok(c, alerts);
-    } catch (error) {
-      console.error('Error fetching from SolarWinds:', error);
-      return bad(c, 'An unexpected error occurred while fetching SolarWinds data.');
-    }
+  const buildHeaders = (authHeader: string): Record<string, string> => ({
+    Authorization: authHeader,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    ...(c.env.SOLARWINDS_CUSTOM_HEADER
+      ? { 'X-Tunnel-Code': String(c.env.SOLARWINDS_CUSTOM_HEADER) }
+      : {}),
   });
+
+  // The query you’ve been using
+  const queryText =
+    'SELECT AlertObjectID, EntityCaption, EntityDetailsUrl, TriggerTimeStamp, Acknowledged, Severity ' +
+    'FROM Orion.AlertActive ORDER BY TriggerTimeStamp DESC';
+
+  // First attempt with provided username format (DOMAIN\user or UPN)
+  let authHeader = toBasicAuth(usernameClean, passwordClean);
+  let response = await fetch(url, {
+    method: 'POST',
+    headers: buildHeaders(authHeader),
+    body: JSON.stringify({ query: queryText }),
+  });
+
+  // If SolarWinds doesn’t like DOMAIN\user (400/401), try UPN fallback once
+  if (!response.ok && (response.status === 400 || response.status === 401)) {
+    const domainMatch = usernameClean.match(/^([^\\]+)\\(.+)$/);
+    if (domainMatch) {
+      const [, domainName, samAccountName] = domainMatch;
+      // Adjust this suffix to your actual UPN, e.g. easternbank.com
+      const upnUsername = `${samAccountName}@${domainName.toLowerCase()}.com`;
+      authHeader = toBasicAuth(upnUsername, passwordClean);
+
+      response = await fetch(url, {
+        method: 'POST',
+        headers: buildHeaders(authHeader),
+        body: JSON.stringify({ query: queryText }),
+      });
+    }
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error(`SolarWinds API Error (${response.status}): ${response.statusText}\n${errorText}`);
+    return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
+  }
+
+  const payload = await response.json<{ results: any[] }>().catch(async () => {
+    const raw = await response.text();
+    console.error('SolarWinds non-JSON response:', raw);
+    return { results: [] as any[] };
+  });
+
+  const severityMap: Record<number, AlertSeverity> = {
+    2: 'Critical',
+    3: 'Warning',
+    1: 'Info',
+  };
+
+  const alerts: MonitoringAlert[] = (payload.results || []).map((row) => ({
+    id: String(row.AlertObjectID),
+    type: row.EntityCaption,
+    affectedSystem: row.EntityDetailsUrl || 'N/A',
+    timestamp: new Date(row.TriggerTimeStamp).toISOString(),
+    severity: severityMap[row.Severity] || 'Info',
+    validated: Boolean(row.Acknowledged),
+  }));
+
+  return ok(c, alerts);
+});
 
   // — SERVICENOW TICKETS (Now Dynamic) - FIXED —
   app.get('/api/servicenow/tickets', async (c) => {
