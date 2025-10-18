@@ -30,5 +30,11 @@
       "tag": "v1",
       "new_sqlite_classes": ["GlobalDurableObject"]
     }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "29dacc8ed80d46c29074d97a1c3ad2fc"
+    }
   ]
 }
