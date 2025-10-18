@@ -30,7 +30,6 @@
 			]
 		}
 	],
-	"vars": {
-		"ENABLE_MANAGEMENT": "false"
-	}
+	// Vars are defined directly in Cloudflare Dashboard so Wrangler doesn't overwrite them
+	"vars": {}
 }
