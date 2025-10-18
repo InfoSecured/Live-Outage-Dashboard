@@ -124,7 +124,7 @@ function AlertItem({ alert }: { alert: MonitoringAlert }) {
       <StatusIndicator status={alert.severity} className="mt-1" />
       <div>
         <p className="font-medium text-foreground">{alert.type}</p>
-        <p className="text-muted-foreground">{alert.affectedSystem}</p>
+        <p className="text-muted-foreground"><a href={alert.affectedSystem} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline break-all">{alert.affectedSystem}</a></p>
         <div className="flex items-center gap-2 text-xs text-muted-foreground/80 mt-1">
           <span>{formatDistanceToNow(parseISO(alert.timestamp), { addSuffix: true })}</span>
           {alert.validated && (
