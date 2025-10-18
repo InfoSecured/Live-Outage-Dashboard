@@ -5,6 +5,7 @@ import { MOCK_OUTAGES, MOCK_ALERTS, MOCK_TICKETS, MOCK_OUTAGE_HISTORY } from "@s
 import { VendorEntity, ServiceNowConfigEntity, SolarWindsConfigEntity, CollaborationBridgeEntity } from "./entities";
 import type { Vendor, VendorStatus, VendorStatusOption, ServiceNowConfig, Outage, SolarWindsConfig, MonitoringAlert, AlertSeverity, ServiceNowTicket, CollaborationBridge, ImpactLevel } from "@shared/types";
 import { format, subDays } from 'date-fns';
+import { startOfToday, endOfToday } from 'date-fns';
 
 // Helper to safely access nested properties from a JSON object
 const getProperty = (objectData: any, path: string): any => {
@@ -710,4 +711,91 @@ app.get('/api/monitoring/alerts', async (c) => {
       return ok(c, []);
     }
   });
+
+
+// Change Controls
+app.get('/api/changes/today', async (c) => {
+  try {
+    const configEntity = new ServiceNowConfigEntity(c.env);
+    const config = await configEntity.getState();
+
+    if (!config.enabled || !config.instanceUrl) {
+      return ok(c, []); // quietly empty if SN isn’t configured
+    }
+
+    const username = c.env[config.usernameVar as keyof Env] as string | undefined;
+    const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+    if (!username || !password) return ok(c, []);
+
+    // Defaults (you can add these to your config later if you want)
+    const changeTable = (config as any).changeTable || 'change_request';
+    const fm = (config as any).changeFieldMapping || {
+      id: 'number',
+      summary: 'short_description',
+      start: 'start_date',            // many orgs use planned_start_date
+      end: 'end_date',                // or planned_end_date
+      state: 'state',
+      type: 'type'
+    };
+
+    // Build “overlaps today” window
+    const start = startOfToday();
+    const end   = endOfToday();
+
+    // Overlap logic: start <= endOfToday AND end >= startOfToday
+    const startISO = start.toISOString().split('.')[0] + 'Z';
+    const endISO   = end.toISOString().split('.')[0] + 'Z';
+
+    // sysparm_query (encoded). Also order by start ascending.
+    // NOTE: If your instance uses planned_* fields, just change fm.start/fm.end above.
+    const query =
+      `${fm.start}<=${endISO}^${fm.end}>=${startISO}^ORDERBY${fm.start}`;
+    const encoded = encodeURIComponent(query);
+
+    const fields = [
+      'sys_id',
+      fm.id,
+      fm.summary,
+      fm.start,
+      fm.end,
+      fm.state,
+      fm.type
+    ].join(',');
+
+    const url =
+      `${config.instanceUrl}/api/now/table/${changeTable}` +
+      `?sysparm_display_value=true` +
+      `&sysparm_fields=${fields}` +
+      `&sysparm_query=${encoded}` +
+      `&sysparm_limit=200`;
+
+    const request = new Request(url, {
+      headers: {
+        'Authorization': 'Basic ' + btoa(`${username}:${password}`),
+        'Accept': 'application/json',
+      },
+    });
+
+    const response = await fetch(request);
+    const { response: logged, data } =
+      await logServiceNowInteraction('ChangesToday', request, response);
+
+    if (!logged.ok || !data || !data.result) return ok(c, []);
+
+    const items = data.result.map((rec: any) => ({
+      id: rec[fm.id] || rec.sys_id,
+      summary: getProperty(rec, fm.summary) || 'No description',
+      start:  safeParseDate(getProperty(rec, fm.start)),
+      end:    safeParseDate(getProperty(rec, fm.end)),
+      state:  String(getProperty(rec, fm.state) ?? ''),
+      type:   String(getProperty(rec, fm.type) ?? ''),
+      url:    `${config.instanceUrl}/nav_to.do?uri=${changeTable}.do?sys_id=${rec.sys_id}`,
+    }));
+
+    return ok(c, items);
+  } catch (err: any) {
+    console.error('CRITICAL /api/changes/today error:', err);
+    return ok(c, []); // keep the UI up even if SN hiccups
+  }
+});
 }
