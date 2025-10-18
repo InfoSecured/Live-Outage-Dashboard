@@ -4,25 +4,71 @@
  */
 import type { ApiResponse } from "@shared/types";
 import { DurableObject } from "cloudflare:workers";
+
+// add Worker types so TS knows about KV + DO types
+import type {
+  KVNamespace,
+  DurableObjectNamespace,
+  DurableObjectState,
+  DurableObjectStub,
+} from "@cloudflare/workers-types";
+
 import type { Context } from "hono";
+
 export interface Env {
+  // DO binding (already in wrangler.jsonc)
   GlobalDurableObject: DurableObjectNamespace<GlobalDurableObject>;
-  // Aegis Dashboard Environment Variables
-  CROWDSTRIKE_STATUS_URL?: string;
-  CITRIX_STATUS_URL?: string;
-  FIS_STATUS_URL?: string;
-  SECTIGO_STATUS_URL?: string;
-  FIVE9_STATUS_URL?: string;
+
+  // KV binding (matches wrangler.jsonc -> "binding": "KV")
+  KV: KVNamespace;
+
+  // ---- Plaintext (optional) envs read by routes ----
+  // Feature flag for UI management controls (/api/config, middleware)
+  ENABLE_MANAGEMENT?: string;
+
+  // Monitoring Alerts UI overrides / filtering
+  SOLARWINDS_UI_BASE?: string;
+  SOLARWINDS_EXCLUDE_CAPTIONS?: string;
+
+  // Optional Cloudflare Access headers the SW route supports
+  CF_ACCESS_CLIENT_ID?: string;
+  CF_ACCESS_CLIENT_SECRET?: string;
+
+  // (Legacy/demo) — safe to keep; not required by current routes
   SOLARWINDS_STATUS_URL?: string;
   SERVICENOW_TICKET_URL_PREFIX?: string;
-  // ServiceNow Credentials
+
+  // (Legacy/demo) — ServiceNow/SolarWinds creds (current code prefers
+  // dynamic keys from your config entity; leaving these is harmless)
   SERVICENOW_USERNAME?: string;
   SERVICENOW_PASSWORD?: string;
-  // SolarWinds Credentials
   SOLARWINDS_USERNAME?: string;
   SOLARWINDS_PASSWORD?: string;
+
+  // Allow additional keys (you use dynamic c.env[cfg.usernameVar], etc.)
+  [k: string]: any;
 }
+
 type Doc<T> = { v: number; data: T };
+
+/** ------------------------------------------------------------------------
+ * KV/env helper: read from KV first, then fall back to plain environment.
+ * Use this anywhere you want live-editable values (non-secrets) to override.
+ * ------------------------------------------------------------------------- */
+export async function getEnv(c: Context, key: string): Promise<string | undefined> {
+  try {
+    const ns: KVNamespace | undefined = (c.env as any)?.KV;
+    if (ns) {
+      const v = await ns.get(key);
+      if (v != null && v !== "") return v;
+    }
+  } catch {
+    // ignore KV read errors and fall back
+  }
+  const raw = (c.env as any)[key];
+  return typeof raw === "string" ? raw : undefined;
+}
+
 /**
  * Global Durable object for storage-purpose ONLY, to be used as a KV-like storage by multiple entities
  */
@@ -85,11 +131,13 @@ export class GlobalDurableObject extends DurableObject<Env, unknown> {
   }
   async indexDrop(_rootKey: string): Promise<void> { await this.ctx.storage.deleteAll(); }
 }
+
 export interface EntityStatics<S, T extends Entity<S>> {
   new (env: Env, id: string): T; // inherited default ctor
   readonly entityName: string;
   readonly initialState: S;
 }
+
 /**
  * Base class for entities - extend this class to create new entities
  */
@@ -183,6 +231,7 @@ export abstract class Entity<State> {
     return ok;
   }
 }
+
 // Minimal prefix-based index held in its own DO instance.
 export class Index<T extends string> extends Entity<unknown> {
   static readonly entityName = "sys-index-root";
@@ -215,9 +264,11 @@ export class Index<T extends string> extends Entity<unknown> {
     return keys.map(k => k.slice(2) as T);
   }
 }
+
 type IS<T> = T extends new (env: Env, id: string) => IndexedEntity<infer S> ? S : never;
 type HS<TCtor> = TCtor & { indexName: string; keyOf(state: IS<TCtor>): string; seedData?: ReadonlyArray<IS<TCtor>> };
 type CtorAny = new (env: Env, id: string) => IndexedEntity<{ id: string }>;
+
 export abstract class IndexedEntity<S extends { id: string }> extends Entity<S> {
   static readonly indexName: string;
   static keyOf<U extends { id: string }>(state: U): string { return state.id; }
@@ -282,6 +333,7 @@ export abstract class IndexedEntity<S extends { id: string }> extends Entity<S> 
     return s;
   }
 }
+
 // API HELPERS
 export const ok = <T>(c: Context, data: T) => c.json({ success: true, data } as ApiResponse<T>);
 export const bad = (c: Context, error: string) => c.json({ success: false, error } as ApiResponse, 400);
