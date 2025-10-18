@@ -728,38 +728,30 @@ app.get('/api/changes/today', async (c) => {
     return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
   }
 
-  // Use whatever your change table is (e.g., "change_request")
   const changeTable = config.changeTable ?? 'change_request';
 
-  // Single declaration of the fields
-  const changeFields = {
-    start:   'start_date',
-    end:     'end_date',
-    id:      'number',
+  // Use the field names you’re actually querying (your log shows start_date/end_date)
+  const F = {
+    id: 'number',
     summary: 'short_description',
-    state:   'state',
-    type:    'type',
-  };
+    state: 'state',
+    type: 'type',
+    start: 'start_date',
+    end: 'end_date',
+  } as const;
 
-  // Overlap-with-today query (start ≤ endOfToday) AND (end ≥ beginningOfToday OR end is empty)
+  // Window overlaps “today”: start ≤ EOD AND (end ≥ BOD OR end empty)
   const query =
-    `${changeFields.start}<=javascript:gs.endOfToday()` +
-    `^(${changeFields.end}>=javascript:gs.beginningOfToday()^OR${changeFields.end}ISEMPTY)` +
-    `^ORDERBY${changeFields.start}`;
+    `${F.start}<=javascript:gs.endOfToday()` +
+    `^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY)` +
+    `^ORDERBY${F.start}`;
 
-  const fields = [
-    'sys_id',
-    changeFields.id,
-    changeFields.summary,
-    changeFields.state,
-    changeFields.type,
-    changeFields.start,
-    changeFields.end,
-  ].join(',');
+  const fields = ['sys_id', F.id, F.summary, F.state, F.type, F.start, F.end].join(',');
 
+  // IMPORTANT: request raw values so dates are ISO and parseable
   const url =
     `${config.instanceUrl}/api/now/table/${changeTable}` +
-    `?sysparm_display_value=true` +
+    `?sysparm_display_value=false` + // <— key change from your log
     `&sysparm_query=${encodeURIComponent(query)}` +
     `&sysparm_fields=${encodeURIComponent(fields)}` +
     `&sysparm_limit=200`;
@@ -779,18 +771,32 @@ app.get('/api/changes/today', async (c) => {
     if (!loggedResponse.ok) {
       return bad(c, `Failed to fetch changes from ServiceNow: ${loggedResponse.statusText}`);
     }
-    if (!data || !data.result) {
-      return ok(c, []);
-    }
+    const raw = (data?.result ?? []) as any[];
 
-    const results = data.result.map((r: any) => ({
-      id: r[changeFields.id] ?? r.sys_id,
-      summary: r[changeFields.summary] ?? 'No summary',
-      state: r[changeFields.state],
-      type: r[changeFields.type],
-      start: r[changeFields.start],
-      end: r[changeFields.end] || null,
-    }));
+    // Exclude canceled/cancelled (handle both spellings + numeric states if you later switch to numeric)
+    const isCanceled = (s: unknown) => {
+      if (s == null) return false;
+      const v = String(s).toLowerCase();
+      return v === 'canceled' || v === 'cancelled';
+    };
+
+    const results = raw
+      .filter(r => !isCanceled(r[F.state]))
+      .map(r => {
+        // Ensure ISO strings (when display_value=false, SN returns ISO Z timestamps already)
+        const startISO = r[F.start] ? new Date(r[F.start]).toISOString() : null;
+        const endISO   = r[F.end]   ? new Date(r[F.end]).toISOString()   : null;
+
+        return {
+          id: r[F.id] ?? r.sys_id,
+          number: r[F.id] ?? r.sys_id,
+          summary: r[F.summary] ?? 'No summary',
+          state: r[F.state],
+          type: r[F.type],
+          start: startISO,
+          end: endISO,
+        };
+      });
 
     return ok(c, results);
   } catch (err) {
