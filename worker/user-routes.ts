@@ -725,7 +725,7 @@ app.get('/api/changes/today', async (c) => {
 
   const table = cfg.changeTable ?? 'change_request';
 
-  // Field map (adjust if your instance uses planned_* instead)
+  // field keys in your instance
   const F = {
     id: 'number',
     summary: 'short_description',
@@ -737,25 +737,32 @@ app.get('/api/changes/today', async (c) => {
 
   const fields = ['sys_id', F.id, F.summary, F.state, F.type, F.start, F.end].join(',');
 
-  // “Occurred today” = start today OR end today OR window overlaps today
-  // ServiceNow encoded query with ORs uses NQ
+  // “Occurred today” = starts today OR ends today OR overlaps today
   const q =
-    // start_date is within today
     `${F.start}ONToday@javascript:gs.beginningOfToday()@javascript:gs.endOfToday()` +
-    // OR end_date is within today
     `^NQ${F.end}ONToday@javascript:gs.beginningOfToday()@javascript:gs.endOfToday()` +
-    // OR window overlaps today (handles open-ended where end is empty)
     `^NQ(${F.start}<=javascript:gs.endOfToday()^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY))` +
-    // sort
     `^ORDERBY${F.start}`;
 
-  // IMPORTANT: ask for raw values so dates are ISO
   const url =
     `${cfg.instanceUrl}/api/now/table/${table}` +
-    `?sysparm_display_value=false` +
+    `?sysparm_display_value=all` + // get both label + raw value
     `&sysparm_query=${encodeURIComponent(q)}` +
     `&sysparm_fields=${encodeURIComponent(fields)}` +
     `&sysparm_limit=200`;
+
+  // helper: normalize SN “YYYY-MM-DD HH:mm:ss” to ISO
+  const toIso = (v?: string | null) => {
+    if (!v) return null;
+    // already ISO?
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)) return v;
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)) {
+      return v.replace(' ', 'T') + 'Z';
+    }
+    // last resort: Date parse
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  };
 
   try {
     const req = new Request(url, {
@@ -775,38 +782,40 @@ app.get('/api/changes/today', async (c) => {
 
     const raw = (data?.result ?? []) as any[];
 
-    // Exclude canceled / cancelled (works for string labels or numeric codes)
-    const CANCEL_LABELS = new Set(['canceled', 'cancelled']);
-    // If your instance’s numeric “Canceled” code is 7 (common), this keeps it out too.
-    // If different, you can set an env var like SNOW_CANCEL_CODES="7,8" and read it here.
-    const CANCEL_CODES = new Set(
-      (c.env.SNOW_CANCEL_CODES ?? '7')
-        .split(',').map(s => s.trim()).filter(Boolean)
-    );
+    // filter out "Canceled/Cancelled" using the display label
+    const out = raw
+      .filter((r) => {
+        const label =
+          (r[F.state]?.display_value ?? r[F.state])?.toString().toLowerCase() || '';
+        return !label.includes('cancel');
+      })
+      .map((r) => {
+        const startVal: string | null = r[F.start]?.value ?? r[F.start] ?? null;
+        const endVal: string | null = r[F.end]?.value ?? r[F.end] ?? null;
 
-    const notCanceled = (state: unknown) => {
-      if (state == null) return true;
-      const s = String(state).toLowerCase();
-      if (CANCEL_LABELS.has(s)) return false;
-      // numeric string?
-      if (/^-?\d+$/.test(s)) return !CANCEL_CODES.has(s);
-      return true;
-    };
+        const startISO = toIso(startVal);
+        const endISO = toIso(endVal);
 
-    const results = raw
-      .filter(r => notCanceled(r[F.state]))
-      .map(r => ({
-        id: r[F.id] ?? r.sys_id,
-        number: r[F.id] ?? r.sys_id,
-        summary: r[F.summary] ?? 'No summary',
-        state: r[F.state],
-        type: r[F.type],
-        // With display_value=false, these are ISO already; guard just in case
-        start: r[F.start] ? new Date(r[F.start]).toISOString() : null,
-        end:   r[F.end]   ? new Date(r[F.end]).toISOString()   : null,
-      }));
+        const stateLabel = r[F.state]?.display_value ?? r[F.state];
+        const typeLabel = r[F.type]?.display_value ?? r[F.type];
 
-    return ok(c, results);
+        const item = {
+          id: r[F.id] ?? r.sys_id,
+          number: r[F.id] ?? r.sys_id,
+          title: r[F.summary] ?? 'Change',
+          summary: r[F.summary] ?? 'Change',
+          state: stateLabel,
+          type: typeLabel,
+          start: startISO,
+          end: endISO,
+          // a couple aliases some UIs expect
+          windowStart: startISO,
+          windowEnd: endISO,
+        };
+        return item;
+      });
+
+    return ok(c, out);
   } catch (e) {
     console.error('SN changes today error:', e);
     return bad(c, 'Unexpected error fetching ServiceNow changes.');
