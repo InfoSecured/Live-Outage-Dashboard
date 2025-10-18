@@ -176,7 +176,13 @@ export function ScheduledChangesPanel() {
             return (
               <li key={ch.id} className="py-3 flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="font-medium text-foreground truncate">
+                  <div
+                    className={`font-medium truncate ${
+                      (ch.type ?? '').toString().toLowerCase().includes('emergency')
+                        ? 'text-red-600'    // red text for Emergency
+                        : 'text-foreground'  // default text for everything else
+                    }`}
+                  >
                     {(ch.number ? ch.number + ' — ' : '') +
                       (ch.offering ? ch.offering + ' — ' : '') +
                       (ch.summary || '')}
