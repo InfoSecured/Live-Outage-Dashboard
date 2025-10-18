@@ -157,6 +157,7 @@ export function ScheduledChangesPanel() {
               <li key={ch.id} className="py-3 flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="font-medium text-foreground truncate">
+                    {ch.number ? `${ch.number} — ` : ''}
                     {asText(ch.summary)}
                   </div>
                   <div className="text-xs text-muted-foreground">
