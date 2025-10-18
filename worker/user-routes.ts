@@ -713,63 +713,58 @@ app.get('/api/monitoring/alerts', async (c) => {
   });
 
 
-// Change Controls
+// — Change Control
 app.get('/api/changes/today', async (c) => {
+  const configEntity = new ServiceNowConfigEntity(c.env);
+  const config = await configEntity.getState();
+
+  if (!config.enabled || !config.instanceUrl) {
+    return bad(c, 'ServiceNow integration is not configured or enabled.');
+  }
+
+  const username = c.env[config.usernameVar as keyof Env] as string | undefined;
+  const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+  if (!username || !password) {
+    return bad(c, 'ServiceNow credentials are not set in Worker secrets.');
+  }
+
+  // Use whatever your change table is (e.g., "change_request")
+  const changeTable = config.changeTable ?? 'change_request';
+
+  // Single declaration of the fields
+  const changeFields = {
+    start:   'start_date',
+    end:     'end_date',
+    id:      'number',
+    summary: 'short_description',
+    state:   'state',
+    type:    'type',
+  };
+
+  // Overlap-with-today query (start ≤ endOfToday) AND (end ≥ beginningOfToday OR end is empty)
+  const query =
+    `${changeFields.start}<=javascript:gs.endOfToday()` +
+    `^(${changeFields.end}>=javascript:gs.beginningOfToday()^OR${changeFields.end}ISEMPTY)` +
+    `^ORDERBY${changeFields.start}`;
+
+  const fields = [
+    'sys_id',
+    changeFields.id,
+    changeFields.summary,
+    changeFields.state,
+    changeFields.type,
+    changeFields.start,
+    changeFields.end,
+  ].join(',');
+
+  const url =
+    `${config.instanceUrl}/api/now/table/${changeTable}` +
+    `?sysparm_display_value=true` +
+    `&sysparm_query=${encodeURIComponent(query)}` +
+    `&sysparm_fields=${encodeURIComponent(fields)}` +
+    `&sysparm_limit=200`;
+
   try {
-    const configEntity = new ServiceNowConfigEntity(c.env);
-    const config = await configEntity.getState();
-
-    if (!config.enabled || !config.instanceUrl) {
-      return ok(c, []); // quietly empty if SN isn’t configured
-    }
-
-    const username = c.env[config.usernameVar as keyof Env] as string | undefined;
-    const password = c.env[config.passwordVar as keyof Env] as string | undefined;
-    if (!username || !password) return ok(c, []);
-
-    // Defaults (you can add these to your config later if you want)
-    const changeTable = (config as any).changeTable || 'change_request';
-    const fm = (config as any).changeFieldMapping || {
-      id: 'number',
-      summary: 'short_description',
-      start: 'start_date',            // many orgs use planned_start_date
-      end: 'end_date',                // or planned_end_date
-      state: 'state',
-      type: 'type'
-    };
-
-    // Build “overlaps today” window
-    const start = startOfToday();
-    const end   = endOfToday();
-
-    // choose your fields (planned_* are common for changes)
-    const fm = { start: 'planned_start_date', end: 'planned_end_date', id: 'number', summary: 'short_description', state: 'state', type: 'type' };
-
-    // Overlap-with-today (handles open-ended when end is empty)
-    const query =
-      `${fm.start}<=javascript:gs.endOfToday()` +
-      `^(${fm.end}>=javascript:gs.beginningOfToday()^OR${fm.end}ISEMPTY)` +
-      `^ORDERBY${fm.start}`;
-
-    const encoded = encodeURIComponent(query);
-
-    const fields = [
-      'sys_id',
-      fm.id,
-      fm.summary,
-      fm.start,
-      fm.end,
-      fm.state,
-      fm.type
-    ].join(',');
-
-    const url =
-      `${config.instanceUrl}/api/now/table/${changeTable}` +
-      `?sysparm_display_value=true` +
-      `&sysparm_fields=${fields}` +
-      `&sysparm_query=${encoded}` +
-      `&sysparm_limit=200`;
-
     const request = new Request(url, {
       headers: {
         'Authorization': 'Basic ' + btoa(`${username}:${password}`),
@@ -778,25 +773,29 @@ app.get('/api/changes/today', async (c) => {
     });
 
     const response = await fetch(request);
-    const { response: logged, data } =
+    const { response: loggedResponse, data } =
       await logServiceNowInteraction('ChangesToday', request, response);
 
-    if (!logged.ok || !data || !data.result) return ok(c, []);
+    if (!loggedResponse.ok) {
+      return bad(c, `Failed to fetch changes from ServiceNow: ${loggedResponse.statusText}`);
+    }
+    if (!data || !data.result) {
+      return ok(c, []);
+    }
 
-    const items = data.result.map((rec: any) => ({
-      id: rec[fm.id] || rec.sys_id,
-      summary: getProperty(rec, fm.summary) || 'No description',
-      start:  safeParseDate(getProperty(rec, fm.start)),
-      end:    safeParseDate(getProperty(rec, fm.end)),
-      state:  String(getProperty(rec, fm.state) ?? ''),
-      type:   String(getProperty(rec, fm.type) ?? ''),
-      url:    `${config.instanceUrl}/nav_to.do?uri=${changeTable}.do?sys_id=${rec.sys_id}`,
+    const results = data.result.map((r: any) => ({
+      id: r[changeFields.id] ?? r.sys_id,
+      summary: r[changeFields.summary] ?? 'No summary',
+      state: r[changeFields.state],
+      type: r[changeFields.type],
+      start: r[changeFields.start],
+      end: r[changeFields.end] || null,
     }));
 
-    return ok(c, items);
-  } catch (err: any) {
-    console.error('CRITICAL /api/changes/today error:', err);
-    return ok(c, []); // keep the UI up even if SN hiccups
+    return ok(c, results);
+  } catch (err) {
+    console.error('Error fetching changes for today:', err);
+    return bad(c, 'Unexpected error fetching changes.');
   }
 });
 }
