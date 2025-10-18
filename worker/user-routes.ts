@@ -806,8 +806,8 @@ app.get('/api/changes/today', async (c) => {
         const sysId = r.sys_id?.value ?? r.sys_id;
 
         return {
-          id: r[F.id] ?? sysId,
-          number: r[F.id] ?? sysId,
+          id: r[F.id]?.value ?? r[F.id] ?? r.sys_id,
+          number: r[F.id]?.display_value ?? r[F.id]?.value ?? r[F.id] ?? r.sys_id,
           title: r[F.summary] ?? 'Change',
           summary: r[F.summary] ?? 'Change',
           state: stateLabel,
