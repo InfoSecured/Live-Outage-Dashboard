@@ -176,13 +176,7 @@ export function ScheduledChangesPanel() {
             return (
               <li key={ch.id} className="py-3 flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div
-                    className={`font-medium truncate ${
-                      (ch.type ?? '').toString().toLowerCase().includes('emergency')
-                        ? 'text-red-600'    // red text for Emergency
-                        : 'text-foreground'  // default text for everything else
-                    }`}
-                  >
+                  <div className="font-medium text-foreground truncate">
                     {(ch.number ? ch.number + ' — ' : '') +
                       (ch.offering ? ch.offering + ' — ' : '') +
                       (ch.summary || '')}
@@ -190,7 +184,20 @@ export function ScheduledChangesPanel() {
                   <div className="text-xs text-muted-foreground">
                     {safeTime(dStart)} – {safeTime(dEnd)}
                     {' · '}
-                    {asText(ch.type) || 'Change'} {ch.state ? `(${asText(ch.state)})` : ''}
+                    <span>
+                      <span
+                        className={
+                          asText(ch.type).toLowerCase().includes('emergency')
+                            ? 'text-red-600 font-medium'
+                            : 'text-muted-foreground'
+                        }
+                      >
+                        {asText(ch.type) || 'Change'}
+                      </span>{' '}
+                      <span className="text-muted-foreground">
+                        {ch.state ? `(${asText(ch.state)})` : ''}
+                      </span>
+                    </span>
                   </div>
                 </div>
                 {ch.url ? (
