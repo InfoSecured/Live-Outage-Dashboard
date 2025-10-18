@@ -638,7 +638,7 @@ app.get('/api/monitoring/alerts', async (c) => {
       impactLevelMapping.map((item) => [item.servicenowValue.toLowerCase(), item.dashboardValue])
     );
 
-    // ✅ define sevenDaysAgo (bug #1)
+    // define sevenDaysAgo (bug #1)
     const sevenDaysAgo = format(subDays(new Date(), 7), 'yyyy-MM-dd HH:mm:ss');
     const typeField = fieldMapping.impactLevel; // 'type'
 
@@ -694,7 +694,7 @@ app.get('/api/monitoring/alerts', async (c) => {
             systemName: getProperty(record, fieldMapping.systemName) || 'Unknown System',
             impactLevel: mappedImpact as ImpactLevel,
             startTime: safeParseDate(getProperty(record, fieldMapping.startTime)),
-            // ✅ use 'record' (bug #2) and return "Unknown" when no end
+            // use 'record' (bug #2) and return "Unknown" when no end
             eta: (() => {
               const rawEnd = getProperty(record, fieldMapping.eta);
               if (!rawEnd || String(rawEnd).trim().length === 0) return 'Unknown';
@@ -713,7 +713,7 @@ app.get('/api/monitoring/alerts', async (c) => {
   });
 
 
-// — CHANGES (anything touching “today”), exclude canceled
+// — Change Control
 app.get('/api/changes/today', async (c) => {
   const cfgEnt = new ServiceNowConfigEntity(c.env);
   const cfg = await cfgEnt.getState();
@@ -746,7 +746,7 @@ app.get('/api/changes/today', async (c) => {
 
   const url =
     `${cfg.instanceUrl}/api/now/table/${table}` +
-    `?sysparm_display_value=all` + // get both label + raw value
+    `?sysparm_display_value=all` + // both label + raw value
     `&sysparm_query=${encodeURIComponent(q)}` +
     `&sysparm_fields=${encodeURIComponent(fields)}` +
     `&sysparm_limit=200`;
@@ -759,7 +759,6 @@ app.get('/api/changes/today', async (c) => {
     if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)) {
       return v.replace(' ', 'T') + 'Z';
     }
-    // last resort: Date parse
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d.toISOString();
   };
@@ -782,12 +781,18 @@ app.get('/api/changes/today', async (c) => {
 
     const raw = (data?.result ?? []) as any[];
 
-    // filter out "Canceled/Cancelled" using the display label
+    // only show Scheduled / Implement / Review; never show Cancel(l)ed
+    const ALLOW = new Set(['scheduled', 'implement', 'review']);
+
     const out = raw
       .filter((r) => {
-        const label =
+        const stateLabel =
           (r[F.state]?.display_value ?? r[F.state])?.toString().toLowerCase() || '';
-        return !label.includes('cancel');
+        if (!stateLabel) return false;
+        if (stateLabel.includes('cancel')) return false;
+        // match words like "Implementation" too
+        if ([...ALLOW].some(s => stateLabel.startsWith(s))) return true;
+        return false;
       })
       .map((r) => {
         const startVal: string | null = r[F.start]?.value ?? r[F.start] ?? null;
@@ -798,21 +803,23 @@ app.get('/api/changes/today', async (c) => {
 
         const stateLabel = r[F.state]?.display_value ?? r[F.state];
         const typeLabel = r[F.type]?.display_value ?? r[F.type];
+        const sysId = r.sys_id?.value ?? r.sys_id;
 
-        const item = {
-          id: r[F.id] ?? r.sys_id,
-          number: r[F.id] ?? r.sys_id,
+        return {
+          id: r[F.id] ?? sysId,
+          number: r[F.id] ?? sysId,
           title: r[F.summary] ?? 'Change',
           summary: r[F.summary] ?? 'Change',
           state: stateLabel,
           type: typeLabel,
           start: startISO,
           end: endISO,
-          // a couple aliases some UIs expect
           windowStart: startISO,
           windowEnd: endISO,
+          url: `${cfg.instanceUrl}/nav_to.do?uri=${encodeURIComponent(
+            `change_request.do?sys_id=${sysId}`
+          )}`,
         };
-        return item;
       });
 
     return ok(c, out);
