@@ -725,7 +725,7 @@ app.get('/api/changes/today', async (c) => {
 
   const table = cfg.changeTable ?? 'change_request';
 
-  // field keys in your instance
+  // Field keys in your instance
   const F = {
     id: 'number',
     summary: 'short_description',
@@ -736,13 +736,23 @@ app.get('/api/changes/today', async (c) => {
     offering: 'service_offering',
   } as const;
 
-  const fields = ['sys_id', F.id, F.summary, F.state, F.type, F.start, F.end, F.offering].join(',');
+  const fields = [
+    'sys_id',
+    F.id,
+    F.summary,
+    F.state,
+    F.type,
+    F.start,
+    F.end,
+    F.offering,
+  ].join(',');
 
-  // “Occurred today” = starts today OR ends today OR overlaps today
+  // Robust "today" logic:
+  // 1) starts today OR 2) ends today OR 3) overlaps today (start <= EOD AND (end >= BOD OR end empty))
   const q =
-    `${F.start}ONToday@javascript:gs.beginningOfToday()@javascript:gs.endOfToday()` +
-    `^NQ${F.end}ONToday@javascript:gs.beginningOfToday()@javascript:gs.endOfToday()` +
-    `^NQ(${F.start}<=javascript:gs.endOfToday()^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY))` +
+    `${F.start}>=javascript:gs.beginningOfToday()^${F.start}<=javascript:gs.endOfToday()` +
+    `^NQ${F.end}>=javascript:gs.beginningOfToday()^${F.end}<=javascript:gs.endOfToday()` +
+    `^NQ${F.start}<=javascript:gs.endOfToday()^(${F.end}>=javascript:gs.beginningOfToday()^OR${F.end}ISEMPTY)` +
     `^ORDERBY${F.start}`;
 
   const url =
@@ -752,16 +762,25 @@ app.get('/api/changes/today', async (c) => {
     `&sysparm_fields=${encodeURIComponent(fields)}` +
     `&sysparm_limit=200`;
 
-  // helper: normalize SN “YYYY-MM-DD HH:mm:ss” to ISO
+  // ---- helpers -------------------------------------------------------------
+
+  // Normalize SN date strings to ISO
   const toIso = (v?: string | null) => {
     if (!v) return null;
-    // already ISO?
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)) return v;
-    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)) {
-      return v.replace(' ', 'T') + 'Z';
-    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)) return v;       // already ISO Z
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)) return v.replace(' ', 'T') + 'Z';
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d.toISOString();
+  };
+
+  // Safely extract a human label from SN objects or plain values
+  const labelOf = (v: any): string => {
+    if (v == null) return '';
+    if (typeof v === 'object') {
+      if ('display_value' in v) return String(v.display_value ?? '');
+      if ('value' in v) return String(v.value ?? '');
+    }
+    return String(v);
   };
 
   try {
@@ -782,17 +801,16 @@ app.get('/api/changes/today', async (c) => {
 
     const raw = (data?.result ?? []) as any[];
 
-    // only show Scheduled / Implement / Review; never show Cancel(l)ed
+    // Only show Scheduled / Implement / Review (exclude anything "cancel...")
     const ALLOW = new Set(['scheduled', 'implement', 'review']);
 
     const out = raw
       .filter((r) => {
-        const stateLabel =
-          (r[F.state]?.display_value ?? r[F.state])?.toString().toLowerCase() || '';
+        const stateLabel = labelOf(r[F.state]).toLowerCase();
         if (!stateLabel) return false;
         if (stateLabel.includes('cancel')) return false;
-        // match words like "Implementation" too
-        if ([...ALLOW].some(s => stateLabel.startsWith(s))) return true;
+        // accept "Implement", "Implementation", "Scheduled", "Review", etc.
+        for (const p of ALLOW) if (stateLabel.startsWith(p)) return true;
         return false;
       })
       .map((r) => {
@@ -802,19 +820,16 @@ app.get('/api/changes/today', async (c) => {
         const startISO = toIso(startVal);
         const endISO = toIso(endVal);
 
-        const stateLabel = r[F.state]?.display_value ?? r[F.state];
-        const typeLabel = r[F.type]?.display_value ?? r[F.type];
         const sysId = r.sys_id?.value ?? r.sys_id;
-        const offering    = labelOf(r[F.offering]);
 
         return {
           id: r[F.id]?.value ?? r[F.id] ?? r.sys_id,
-          number: r[F.id]?.display_value ?? r[F.id]?.value ?? r[F.id] ?? r.sys_id,
-          title: r[F.summary] ?? 'Change',
-          offering: offering,
-          summary: r[F.summary] ?? 'Change',
-          state: stateLabel,
-          type: typeLabel,
+          number: labelOf(r[F.id]) || r.sys_id,               // CHG number for UI
+          offering: labelOf(r[F.offering]),                    // service_offering label
+          title: labelOf(r[F.summary]) || 'Change',
+          summary: labelOf(r[F.summary]) || 'Change',
+          state: labelOf(r[F.state]),
+          type: labelOf(r[F.type]),
           start: startISO,
           end: endISO,
           windowStart: startISO,
