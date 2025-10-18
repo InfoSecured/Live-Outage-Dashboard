@@ -361,30 +361,28 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  // — SOLARWINDS CONFIG —
-  app.get('/api/solarwinds/config', async (c) => {
-    const configEntity = new SolarWindsConfigEntity(c.env);
-    const config = await configEntity.getState();
-    return ok(c, config);
-  });
-
-  // MODIFIED: Added checkManagementEnabled middleware
-  app.post('/api/solarwinds/config', checkManagementEnabled, async (c) => {
-    const body = await c.req.json<SolarWindsConfig>();
-    const configEntity = new SolarWindsConfigEntity(c.env);
-    await configEntity.save(body);
-    return ok(c, body);
-  });
-
-// — MONITORING ALERTS (SolarWinds via Tunnel + Cloudflare Access + custom header) —
+// — MONITORING ALERTS (Now Dynamic)
 app.get('/api/monitoring/alerts', async (c) => {
-  const solarwindsUrl = c.env.SOLARWINDS_API_URL;
-  const username = c.env.SOLARWINDS_USERNAME;
-  const password = c.env.SOLARWINDS_PASSWORD;
-  const xTunnelCode = c.env.X_TUNNEL_CODE;
-  const cfAccessClientId = c.env.CF_ACCESS_CLIENT_ID;
-  const cfAccessClientSecret = c.env.CF_ACCESS_CLIENT_SECRET;
+  const configEntity = new SolarWindsConfigEntity(c.env);
+  const config = await configEntity.getState();
 
+  if (!config.enabled || !config.apiUrl) {
+    return bad(c, 'SolarWinds integration is not configured or enabled.');
+  }
+
+  const username = c.env[config.usernameVar as keyof Env] as string | undefined;
+  const password = c.env[config.passwordVar as keyof Env] as string | undefined;
+
+  if (!username || !password) {
+    return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
+  }
+
+  // ✅ Use underscore_names for env vars (hyphens are invalid identifiers)
+  const tunnelHeaderValue = (c.env as any).SOLARWINDS_CUSTOM_HEADER as string | undefined;
+  const cfAccessClientId = (c.env as any).CF_ACCESS_CLIENT_ID as string | undefined;
+  const cfAccessClientSecret = (c.env as any).CF_ACCESS_CLIENT_SECRET as string | undefined;
+
+  // Example SWQL – adjust columns to match your instance’s schema if needed
   const query = `
     SELECT 
       AlertObjectID,
@@ -400,60 +398,61 @@ app.get('/api/monitoring/alerts', async (c) => {
     ORDER BY TriggeredOn DESC
   `;
 
-  const headers: Record<string, string> = {
-    'Authorization': 'Basic ' + btoa(`${username}:${password}`),
-    'Content-Type': 'application/json',
-    'Accept': 'application/json'
-  };
-
-  if (xTunnelCode) {
-    headers['X-Tunnel-Code'] = xTunnelCode;
-  }
-
-  if (cfAccessClientId && cfAccessClientSecret) {
-    headers['CF-Access-Client-Id'] = cfAccessClientId;
-    headers['CF-Access-Client-Secret'] = cfAccessClientSecret;
-  }
+  const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
   try {
-    const response = await fetch(`${solarwindsUrl}/SolarWinds/InformationService/v3/Json/Query`, {
+    // Build headers securely
+    const requestHeaders: Record<string, string> = {
+      'Authorization': 'Basic ' + btoa(`${username}:${password}`),
+      'Content-Type': 'application/json',
+    };
+
+    // Optional custom tunnel header (if you use it)
+    if (tunnelHeaderValue && tunnelHeaderValue.trim().length > 0) {
+      requestHeaders['X-Tunnel-Code'] = tunnelHeaderValue;
+    }
+
+    // Optional Cloudflare Access service token headers (only if origin is behind Access)
+    if (cfAccessClientId && cfAccessClientSecret) {
+      requestHeaders['CF-Access-Client-Id'] = cfAccessClientId;
+      requestHeaders['CF-Access-Client-Secret'] = cfAccessClientSecret;
+    }
+
+    const response = await fetch(url, {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ query })
+      headers: requestHeaders,
+      body: JSON.stringify({ query }),
     });
 
-    const responseText = await response.text();
-
     if (!response.ok) {
-      console.error(`SolarWinds API Error (${response.status}): ${responseText}`);
-      return c.json(
-        { error: `Failed to fetch from SolarWinds: ${response.statusText}`, body: responseText },
-        response.status
-      );
+      const errorText = await response.text();
+      console.error(`SolarWinds API Error (${response.status}): ${errorText}`);
+      return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
     }
 
-    let parsed: { results: any[] } = { results: [] };
-    try {
-      parsed = JSON.parse(responseText);
-    } catch (parseErr) {
-      console.error('JSON parse error:', parseErr);
-      return c.json({ error: 'Invalid JSON from SolarWinds' }, 500);
-    }
+    // SolarWinds JSON shape is { results: [...] }
+    const parsed = await response.json() as { results?: any[] };
+    const results = Array.isArray(parsed.results) ? parsed.results : [];
 
-    const results = parsed.results || [];
-    const alerts = results.map((item) => ({
-      id: item.AlertObjectID,
-      displayName: item.DisplayName || 'Unknown Alert',
-      acknowledged: item.Acknowledged || false,
-      triggeredOn: item.TriggeredOn || null,
-      node: item.NodeCaption || item.RelatedNodeID || 'Unknown Node',
-      detailsUrl: item.DetailsUrl || null
+    const severityMap: Record<number, AlertSeverity> = {
+      2: 'Critical',
+      3: 'Warning',
+      1: 'Info',
+    };
+
+    const alerts: MonitoringAlert[] = results.map((row) => ({
+      id: String(row.AlertObjectID ?? ''),
+      type: row.EntityCaption ?? 'Unknown',
+      affectedSystem: row.EntityDetailsUrl ?? 'N/A',
+      timestamp: row.TriggerTimeStamp ? new Date(row.TriggerTimeStamp).toISOString() : new Date().toISOString(),
+      severity: severityMap[row.Severity as number] ?? 'Info',
+      validated: Boolean(row.Acknowledged),
     }));
 
-    return c.json({ alerts });
+    return ok(c, alerts);
   } catch (error) {
-    console.error('Unexpected error fetching SolarWinds data:', error);
-    return c.json({ error: 'Unexpected error fetching SolarWinds data' }, 500);
+    console.error('Error fetching from SolarWinds:', error);
+    return bad(c, 'An unexpected error occurred while fetching SolarWinds data.');
   }
 });
 
