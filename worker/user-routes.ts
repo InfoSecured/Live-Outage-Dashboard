@@ -361,7 +361,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-// — MONITORING ALERTS (Now Dynamic)
+// — MONITORING ALERTS
 app.get('/api/monitoring/alerts', async (c) => {
   const configEntity = new SolarWindsConfigEntity(c.env);
   const config = await configEntity.getState();
@@ -377,72 +377,99 @@ app.get('/api/monitoring/alerts', async (c) => {
     return bad(c, 'SolarWinds credentials are not set in Worker secrets.');
   }
 
-  // ✅ Use underscore_names for env vars (hyphens are invalid identifiers)
-  const tunnelHeaderValue = (c.env as any).SOLARWINDS_CUSTOM_HEADER as string | undefined;
-  const cfAccessClientId = (c.env as any).CF_ACCESS_CLIENT_ID as string | undefined;
-  const cfAccessClientSecret = (c.env as any).CF_ACCESS_CLIENT_SECRET as string | undefined;
-
-  // Example SWQL – adjust columns to match your instance’s schema if needed
-  const query =
-    "SELECT TOP 100 aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggerTimeStamp, aa.Acknowledged, aa.Severity " +
-    "FROM Orion.AlertActive aa " +
-    "JOIN Orion.AlertObjects ao ON aa.AlertObjectID = ao.AlertObjectID " +
-    "ORDER BY aa.TriggerTimeStamp DESC";
-
   const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
-  try {
-    // Build headers securely
-    const requestHeaders: Record<string, string> = {
-      'Authorization': 'Basic ' + btoa(`${username}:${password}`),
-      'Content-Type': 'application/json',
-    };
+  // Primary (B): has TriggeredDateTime + Acknowledged
+  const queryB =
+    "SELECT TOP 20 aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggeredDateTime, aa.Acknowledged " +
+    "FROM Orion.AlertActive AS aa " +
+    "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
+    "ORDER BY aa.TriggeredDateTime DESC";
 
-    // Optional custom tunnel header (if you use it)
-    if (tunnelHeaderValue && tunnelHeaderValue.trim().length > 0) {
-      requestHeaders['X-Tunnel-Code'] = tunnelHeaderValue;
-    }
+  // Fallback (A): caption + url only
+  const queryA =
+    "SELECT TOP 20 aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl " +
+    "FROM Orion.AlertActive AS aa " +
+    "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
+    "ORDER BY aa.AlertObjectID DESC";
 
-    // Optional Cloudflare Access service token headers (only if origin is behind Access)
-    if (cfAccessClientId && cfAccessClientSecret) {
-      requestHeaders['CF-Access-Client-Id'] = cfAccessClientId;
-      requestHeaders['CF-Access-Client-Secret'] = cfAccessClientSecret;
-    }
+  const headers: Record<string, string> = {
+    'Authorization': 'Basic ' + btoa(`${username}:${password}`),
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
 
-    const response = await fetch(url, {
+  const tunnelCode = c.env.SOLARWINDS_CUSTOM_HEADER;
+  if (tunnelCode) headers['X-Tunnel-Code'] = tunnelCode;
+
+  const cfId = (c.env as any).CF_ACCESS_CLIENT_ID;
+  const cfSecret = (c.env as any).CF_ACCESS_CLIENT_SECRET;
+  if (cfId && cfSecret) {
+    headers['CF-Access-Client-Id'] = cfId;
+    headers['CF-Access-Client-Secret'] = cfSecret;
+  }
+
+  // helper to issue one query
+  const run = async (query: string) => {
+    const resp = await fetch(url, {
       method: 'POST',
-      headers: requestHeaders,
+      headers,
       body: JSON.stringify({ query }),
     });
+    return resp;
+  };
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`SolarWinds API Error (${response.status}): ${errorText}`);
-      return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
+  try {
+    // try B first
+    let resp = await run(queryB);
+
+    // if schema says “no TriggeredDateTime”, fall back to A
+    if (!resp.ok) {
+      const txt = await resp.text();
+      // keep original error in logs
+      console.error(`SolarWinds API Error (${resp.status}) on query B: ${txt}`);
+
+      // 400 with parser/column errors? try A
+      if (resp.status === 400) {
+        resp = await run(queryA);
+      } else {
+        return bad(c, `Failed to fetch from SolarWinds: ${resp.statusText}`);
+      }
     }
 
-    // SolarWinds JSON shape is { results: [...] }
-    const parsed = await response.json() as { results?: any[] };
-    const results = Array.isArray(parsed.results) ? parsed.results : [];
+    if (!resp.ok) {
+      const txt = await resp.text();
+      console.error(`SolarWinds API Error (${resp.status}) on fallback A: ${txt}`);
+      return bad(c, `Failed to fetch from SolarWinds: ${resp.statusText}`);
+    }
 
-    const severityMap: Record<number, AlertSeverity> = {
-      2: 'Critical',
-      3: 'Warning',
-      1: 'Info',
+    const json = await resp.json() as { results?: any[] };
+    const rows = Array.isArray(json.results) ? json.results : [];
+
+    // Build absolute URLs if SW returns relative paths
+    const toAbsoluteUrl = (maybeRelative?: string | null) => {
+      if (!maybeRelative) return 'N/A';
+      if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
+      try {
+        const base = new URL(config.apiUrl);
+        return new URL(maybeRelative, `${base.protocol}//${base.host}`).toString();
+      } catch {
+        return maybeRelative;
+      }
     };
 
-    const alerts: MonitoringAlert[] = results.map((row) => ({
-      id: String(row.AlertObjectID ?? ''),
-      type: row.EntityCaption ?? 'Unknown',
-      affectedSystem: row.EntityDetailsUrl ?? 'N/A',
-      timestamp: row.TriggerTimeStamp ? new Date(row.TriggerTimeStamp).toISOString() : new Date().toISOString(),
-      severity: severityMap[row.Severity as number] ?? 'Info',
-      validated: Boolean(row.Acknowledged),
+    const alerts: MonitoringAlert[] = rows.map((r) => ({
+      id: String(r.AlertObjectID),
+      type: r.EntityCaption || 'Unknown',
+      affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
+      timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
+      severity: 'Info',                 // add a proper mapping later if you expose severity
+      validated: Boolean(r.Acknowledged ?? false),
     }));
 
     return ok(c, alerts);
-  } catch (error) {
-    console.error('Error fetching from SolarWinds:', error);
+  } catch (err) {
+    console.error('Unexpected error fetching SolarWinds data:', err);
     return bad(c, 'An unexpected error occurred while fetching SolarWinds data.');
   }
 });
