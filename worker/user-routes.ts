@@ -418,8 +418,17 @@ app.get('/api/monitoring/alerts', async (c) => {
 
   // The query you’ve been using
   const queryText =
-    'SELECT AlertObjectID, EntityCaption, EntityDetailsUrl, TriggerTimeStamp, Acknowledged, Severity ' +
-    'FROM Orion.AlertActive ORDER BY TriggerTimeStamp DESC';
+    "SELECT TOP 50 " +
+  "  aa.AlertObjectID, " +
+  "  ao.EntityCaption, " +
+  "  ao.EntityDetailsUrl, " +
+  "  aa.TriggeredDateTime, " +
+  "  aa.Acknowledged, " +
+  "  ac.Severity " +
+  "FROM Orion.AlertActive AS aa " +
+  "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
+  "JOIN Orion.AlertConfigurations AS ac ON ao.AlertID = ac.AlertID " +
+  "ORDER BY aa.TriggeredDateTime DESC";
 
   // First attempt with provided username format (DOMAIN\user or UPN)
   let authHeader = toBasicAuth(usernameClean, passwordClean);
@@ -459,19 +468,21 @@ app.get('/api/monitoring/alerts', async (c) => {
   });
 
   const severityMap: Record<number, AlertSeverity> = {
-    2: 'Critical',
-    3: 'Warning',
-    1: 'Info',
-  };
+  4: 'Critical',
+  3: 'Warning',
+  2: 'Warning',
+  1: 'Info',
+  0: 'Info',
+};
 
-  const alerts: MonitoringAlert[] = (payload.results || []).map((row) => ({
-    id: String(row.AlertObjectID),
-    type: row.EntityCaption,
-    affectedSystem: row.EntityDetailsUrl || 'N/A',
-    timestamp: new Date(row.TriggerTimeStamp).toISOString(),
-    severity: severityMap[row.Severity] || 'Info',
-    validated: Boolean(row.Acknowledged),
-  }));
+const alerts: MonitoringAlert[] = results.map((row: any) => ({
+  id: String(row.AlertObjectID),
+  type: row.EntityCaption ?? 'Unknown',
+  affectedSystem: row.EntityDetailsUrl ?? 'N/A',
+  timestamp: new Date(row.TriggeredDateTime).toISOString(),
+  severity: severityMap[row.Severity] ?? 'Info',
+  validated: Boolean(row.Acknowledged),
+}));
 
   return ok(c, alerts);
 });
