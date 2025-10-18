@@ -742,14 +742,15 @@ app.get('/api/changes/today', async (c) => {
     const start = startOfToday();
     const end   = endOfToday();
 
-    // Overlap logic: start <= endOfToday AND end >= startOfToday
-    const startISO = start.toISOString().split('.')[0] + 'Z';
-    const endISO   = end.toISOString().split('.')[0] + 'Z';
+    // choose your fields (planned_* are common for changes)
+    const fm = { start: 'planned_start_date', end: 'planned_end_date', id: 'number', summary: 'short_description', state: 'state', type: 'type' };
 
-    // sysparm_query (encoded). Also order by start ascending.
-    // NOTE: If your instance uses planned_* fields, just change fm.start/fm.end above.
+    // Overlap-with-today (handles open-ended when end is empty)
     const query =
-      `${fm.start}<=${endISO}^${fm.end}>=${startISO}^ORDERBY${fm.start}`;
+      `${fm.start}<=javascript:gs.endOfToday()` +
+      `^(${fm.end}>=javascript:gs.beginningOfToday()^OR${fm.end}ISEMPTY)` +
+      `^ORDERBY${fm.start}`;
+
     const encoded = encodeURIComponent(query);
 
     const fields = [
