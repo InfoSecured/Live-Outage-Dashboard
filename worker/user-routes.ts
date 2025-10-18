@@ -733,6 +733,8 @@ app.get('/api/changes/today', async (c) => {
     type: 'type',
     start: 'start_date',
     end: 'end_date',
+    plannedStart: 'planned_start_date',
+    plannedEnd: 'planned_end_date',
     offering: 'service_offering',
   } as const;
 
@@ -744,41 +746,40 @@ app.get('/api/changes/today', async (c) => {
     F.type,
     F.start,
     F.end,
+    F.plannedStart,
+    F.plannedEnd,
     F.offering,
   ].join(',');
 
-  // Robust "today" logic:
-  // 1) starts today OR 2) ends today OR 3) overlaps today (start <= EOD AND (end >= BOD OR end empty))
+  // "Today" windows (start OR end within today, OR overlap today), and restrict to desired states
   const q =
-  // active + state restriction
-  `active=true^stateIN-2,-1,0^` +
-  // overlap via start_date/end_date
-  `${F.start}<=javascript:gs.endOfToday()^${F.end}>=javascript:gs.beginningOfToday()` +
-  // OR overlap via planned_* (covers records that only set planned_*)
-  `^NQactive=true^stateIN-2,-1,0^` +
-  `planned_start_date<=javascript:gs.endOfToday()^planned_end_date>=javascript:gs.beginningOfToday()` +
-  // ordering
-  `^ORDERBY${F.start}`;
+    // active + state restriction (include Scheduled -1, Implement 0, Review 1; keep -2 for sites that label it "Review")
+    `active=true^stateIN-2,-1,0,1^` +
+    // overlap via start/end
+    `${F.start}<=javascript:gs.endOfToday()^${F.end}>=javascript:gs.beginningOfToday()` +
+    // OR overlap via planned_* (records that only set planned_*)
+    `^NQactive=true^stateIN-2,-1,0,1^` +
+    `${F.plannedStart}<=javascript:gs.endOfToday()^${F.plannedEnd}>=javascript:gs.beginningOfToday()` +
+    // order by earliest concrete start, falls back to planned start
+    `^ORDERBY${F.start}^ORDERBY${F.plannedStart}`;
 
   const url =
     `${cfg.instanceUrl}/api/now/table/${table}` +
-    `?sysparm_display_value=all` + // both label + raw value
+    `?sysparm_display_value=all` + // labels + raw values
     `&sysparm_query=${encodeURIComponent(q)}` +
     `&sysparm_fields=${encodeURIComponent(fields)}` +
     `&sysparm_limit=200`;
 
   // ---- helpers -------------------------------------------------------------
 
-  // Normalize SN date strings to ISO
   const toIso = (v?: string | null) => {
     if (!v) return null;
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)) return v;       // already ISO Z
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(v)) return v; // already ISO Z
     if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(v)) return v.replace(' ', 'T') + 'Z';
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d.toISOString();
   };
 
-  // Safely extract a human label from SN objects or plain values
   const labelOf = (v: any): string => {
     if (v == null) return '';
     if (typeof v === 'object') {
@@ -806,31 +807,32 @@ app.get('/api/changes/today', async (c) => {
 
     const raw = (data?.result ?? []) as any[];
 
-    // Only show Scheduled / Implement / Review (exclude anything "cancel...")
-    const ALLOW = new Set(['scheduled', 'implement', 'review']);
+    // Allow only these labels (exclude anything "cancel...")
+    const ALLOW = ['scheduled', 'implement', 'review'];
 
     const out = raw
       .filter((r) => {
-        const stateLabel = labelOf(r[F.state]).toLowerCase();
-        if (!stateLabel) return false;
-        if (stateLabel.includes('cancel')) return false;
-        // accept "Implement", "Implementation", "Scheduled", "Review", etc.
-        for (const p of ALLOW) if (stateLabel.startsWith(p)) return true;
-        return false;
+        const s = labelOf(r[F.state]).toLowerCase();
+        if (!s) return false;
+        if (s.includes('cancel')) return false;
+        return ALLOW.some((w) => s.startsWith(w) || s.includes(w));
       })
       .map((r) => {
-        const startVal: string | null = r[F.start]?.value ?? r[F.start] ?? null;
-        const endVal: string | null = r[F.end]?.value ?? r[F.end] ?? null;
+        // prefer concrete start/end; fall back to planned_* if concrete is empty
+        const startRaw: string | null =
+          r[F.start]?.value ?? r[F.start] ?? r[F.plannedStart]?.value ?? r[F.plannedStart] ?? null;
+        const endRaw: string | null =
+          r[F.end]?.value ?? r[F.end] ?? r[F.plannedEnd]?.value ?? r[F.plannedEnd] ?? null;
 
-        const startISO = toIso(startVal);
-        const endISO = toIso(endVal);
+        const startISO = toIso(startRaw);
+        const endISO = toIso(endRaw);
 
         const sysId = r.sys_id?.value ?? r.sys_id;
 
         return {
           id: r[F.id]?.value ?? r[F.id] ?? r.sys_id,
-          number: labelOf(r[F.id]) || r.sys_id,               // CHG number for UI
-          offering: labelOf(r[F.offering]),                    // service_offering label
+          number: labelOf(r[F.id]) || r.sys_id,
+          offering: labelOf(r[F.offering]),
           title: labelOf(r[F.summary]) || 'Change',
           summary: labelOf(r[F.summary]) || 'Change',
           state: labelOf(r[F.state]),
