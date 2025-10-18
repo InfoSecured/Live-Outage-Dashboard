@@ -376,7 +376,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, body);
   });
 
-// — MONITORING ALERTS
+// — MONITORING ALERTS (SolarWinds via Tunnel + Cloudflare Access + custom header) —
 app.get('/api/monitoring/alerts', async (c) => {
   const configEntity = new SolarWindsConfigEntity(c.env);
   const config = await configEntity.getState();
@@ -385,6 +385,7 @@ app.get('/api/monitoring/alerts', async (c) => {
     return bad(c, 'SolarWinds integration is not configured or enabled.');
   }
 
+  // Always use the public tunnel hostname on 443 (no :17774 here)
   const baseUrl = String(config.apiUrl).replace(/\/+$/, '');
   const url = `${baseUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
@@ -398,22 +399,32 @@ app.get('/api/monitoring/alerts', async (c) => {
   const usernameClean = usernameSecret.trim();
   const passwordClean = passwordSecret.trim();
 
-  // Safe Basic auth (handles non-ASCII)
+  // Safe Basic auth for potential non-ASCII characters
   const toBasicAuth = (user: string, pass: string): string => {
     const pair = `${user}:${pass}`;
     const latin1 = unescape(encodeURIComponent(pair));
     return 'Basic ' + btoa(latin1);
   };
 
+  // Optional Cloudflare Access service token headers (if you put the hostname behind Access)
+  const accessHeaders =
+    c.env.CF_ACCESS_CLIENT_ID && c.env.CF_ACCESS_CLIENT_SECRET
+      ? {
+          'CF-Access-Client-Id': String(c.env.CF_ACCESS_CLIENT_ID),
+          'CF-Access-Client-Secret': String(c.env.CF_ACCESS_CLIENT_SECRET),
+        }
+      : {};
+
+  // Build headers (includes your custom header X-Tunnel-Code if provided)
   const buildHeaders = (authHeader: string): Record<string, string> => ({
     Authorization: authHeader,
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    // Optional custom header via env
     ...(c.env.SOLARWINDS_CUSTOM_HEADER ? { 'X-Tunnel-Code': String(c.env.SOLARWINDS_CUSTOM_HEADER) } : {}),
+    ...accessHeaders,
   });
 
-  // SWQL confirmed via curl: join AlertActive + AlertObjects + AlertConfigurations
+  // SWQL verified in curl
   const query = `
     SELECT TOP 50
       aa.AlertObjectID,
@@ -428,7 +439,7 @@ app.get('/api/monitoring/alerts', async (c) => {
     ORDER BY aa.TriggeredDateTime DESC
   `.trim();
 
-  // First attempt with provided username (DOMAIN\user or UPN)
+  // First attempt: whatever username you configured (DOMAIN\user or UPN)
   let authHeader = toBasicAuth(usernameClean, passwordClean);
   let response = await fetch(url, {
     method: 'POST',
@@ -436,13 +447,13 @@ app.get('/api/monitoring/alerts', async (c) => {
     body: JSON.stringify({ query }),
   });
 
-  // If 400/401, retry once with UPN format if the username looked like DOMAIN\user
+  // If auth fails and username looked like DOMAIN\user, retry once as a guessed UPN
   if (!response.ok && (response.status === 400 || response.status === 401)) {
-    const m = usernameClean.match(/^([^\\]+)\\(.+)$/);
-    if (m) {
-      const [, domainName, sam] = m;
-      const upn = `${sam}@${domainName.toLowerCase()}.com`; // adjust suffix if needed
-      authHeader = toBasicAuth(upn, passwordClean);
+    const domainMatch = usernameClean.match(/^([^\\]+)\\(.+)$/);
+    if (domainMatch) {
+      const [, domainName, samAccountName] = domainMatch;
+      const guessedUpn = `${samAccountName}@${domainName.toLowerCase()}.com`; // adjust suffix if needed
+      authHeader = toBasicAuth(guessedUpn, passwordClean);
       response = await fetch(url, {
         method: 'POST',
         headers: buildHeaders(authHeader),
@@ -457,7 +468,7 @@ app.get('/api/monitoring/alerts', async (c) => {
     return bad(c, `Failed to fetch from SolarWinds: ${response.statusText}`);
   }
 
-  // IMPORTANT: don't use an undeclared `results` var — read into payload safely
+  // Parse and guard against undefined 'results'
   const payload = await response.json<{ results?: any[] }>().catch(async () => {
     const raw = await response.text().catch(() => '');
     console.error('SolarWinds non-JSON response:', raw);
