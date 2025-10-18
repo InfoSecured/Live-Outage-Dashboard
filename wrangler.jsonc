@@ -29,7 +29,5 @@
 				"GlobalDurableObject"
 			]
 		}
-	],
-	// Vars are defined directly in Cloudflare Dashboard so Wrangler doesn't overwrite them
-	"vars": {}
+	]
 }
