@@ -379,16 +379,16 @@ app.get('/api/monitoring/alerts', async (c) => {
 
   const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
-  // Primary (B): has TriggeredDateTime + Acknowledged
+  // Primary (B): with TriggeredDateTime + Acknowledged (no TOP limit)
   const queryB =
-    "SELECT TOP 20 aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggeredDateTime, aa.Acknowledged " +
+    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggeredDateTime, aa.Acknowledged " +
     "FROM Orion.AlertActive AS aa " +
     "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
     "ORDER BY aa.TriggeredDateTime DESC";
 
-  // Fallback (A): caption + url only
+  // Fallback (A): simpler version if B fails (no TOP limit)
   const queryA =
-    "SELECT TOP 20 aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl " +
+    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl " +
     "FROM Orion.AlertActive AS aa " +
     "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
     "ORDER BY aa.AlertObjectID DESC";
@@ -409,7 +409,6 @@ app.get('/api/monitoring/alerts', async (c) => {
     headers['CF-Access-Client-Secret'] = cfSecret;
   }
 
-  // helper to issue one query
   const run = async (query: string) => {
     const resp = await fetch(url, {
       method: 'POST',
@@ -420,16 +419,13 @@ app.get('/api/monitoring/alerts', async (c) => {
   };
 
   try {
-    // try B first
     let resp = await run(queryB);
 
-    // if schema says “no TriggeredDateTime”, fall back to A
+    // fallback if TriggeredDateTime doesn’t exist
     if (!resp.ok) {
       const txt = await resp.text();
-      // keep original error in logs
       console.error(`SolarWinds API Error (${resp.status}) on query B: ${txt}`);
 
-      // 400 with parser/column errors? try A
       if (resp.status === 400) {
         resp = await run(queryA);
       } else {
@@ -444,9 +440,22 @@ app.get('/api/monitoring/alerts', async (c) => {
     }
 
     const json = await resp.json() as { results?: any[] };
-    const rows = Array.isArray(json.results) ? json.results : [];
+    let rows = Array.isArray(json.results) ? json.results : [];
 
-    // Build absolute URLs if SW returns relative paths
+    // 🧩 Filter out any excluded captions (from plaintext variable)
+    const excludeList = (c.env.SOLARWINDS_EXCLUDE_CAPTIONS ?? "")
+      .split(",")
+      .map((v) => v.trim().toLowerCase())
+      .filter(Boolean);
+
+    rows = rows.filter((r) => {
+      const caption = (r.EntityCaption ?? "").toLowerCase();
+      return !excludeList.some((term) =>
+        caption === term || caption.startsWith(term)
+      );
+    });
+
+    // Build absolute URLs if SolarWinds returns relative paths
     const toAbsoluteUrl = (maybeRelative?: string | null) => {
       if (!maybeRelative) return 'N/A';
       if (/^https?:\/\//i.test(maybeRelative)) return maybeRelative;
@@ -463,7 +472,7 @@ app.get('/api/monitoring/alerts', async (c) => {
       type: r.EntityCaption || 'Unknown',
       affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
       timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
-      severity: 'Info',                 // add a proper mapping later if you expose severity
+      severity: 'Info',
       validated: Boolean(r.Acknowledged ?? false),
     }));
 
