@@ -12,40 +12,57 @@ type ChangeItem = {
   state?: string | number | null;
   type?: string | null;
   url?: string | null;
-  // allow passthrough unknown fields from API
+  sys_id?: string;
+  number?: string;
   [k: string]: any;
 };
 
 function coerceArray(payload: any): any[] {
   if (Array.isArray(payload)) return payload;
+  if (payload && Array.isArray(payload.result)) return payload.result; // raw ServiceNow
+  if (payload && Array.isArray(payload.items)) return payload.items;
   if (payload && Array.isArray(payload.data)) return payload.data;
-  if (payload && Array.isArray(payload.result)) return payload.result;   // ServiceNow default
-  if (payload && Array.isArray(payload.results)) return payload.results; // some wrappers
   return [];
 }
 
-function toIsoLike(v?: string | null): string | null {
-  if (!v) return null;
-  const s = String(v).trim();
+function asText(v: any): string {
+  if (v == null) return '';
+  if (typeof v === 'object') {
+    // ServiceNow display objects
+    if ('display_value' in v) return String((v as any).display_value ?? '');
+    if ('value' in v) return String((v as any).value ?? '');
+    try { return JSON.stringify(v); } catch { return String(v); }
+  }
+  return String(v);
+}
+
+function normDateStr(v?: any): string | null {
+  const s = asText(v).trim();
   if (!s) return null;
-  // Already ISO?
-  if (s.includes('T')) return s;
-  // Convert "YYYY-MM-DD hh:mm:ss" -> "YYYY-MM-DDThh:mm:ss"
-  // (no trailing Z so it stays in local time)
-  return s.replace(' ', 'T');
+  // turn "YYYY-MM-DD hh:mm:ss" into ISO-ish "YYYY-MM-DDThh:mm:ss"
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return s.replace(' ', 'T');
+  return s; // let Date try (also handles real ISO)
 }
 
-function looksCancelled(state: unknown): boolean {
-  if (state == null) return false;
-  const s = String(state).toLowerCase();
-  // Works for both display ("Canceled"/"Cancelled") and numeric enums we don't fully map yet
-  return s.includes('cancel');
+function safeParse(v?: any): Date | null {
+  const n = normDateStr(v);
+  if (!n) return null;
+  const d = new Date(n);
+  return isNaN(d.getTime()) ? null : d;
 }
 
-function buildSnUrl(row: any): string | null {
-  if (row.url) return row.url;
+function safeTime(d: Date | null): string {
+  try { return d ? format(d, 'p') : '—'; } catch { return '—'; }
+}
+
+function isCancelled(state: unknown): boolean {
+  const s = asText(state).toLowerCase();
+  return s.includes('cancel'); // “Canceled/Cancelled”
+}
+
+function buildUrl(row: any): string | null {
+  if (row.url) return asText(row.url);
   if (row.sys_id && row.instance_base_url) {
-    // If your API ever sends instance_base_url, use it:
     return `${row.instance_base_url}/nav_to.do?uri=change_request.do?sys_id=${row.sys_id}`;
   }
   return null;
@@ -54,80 +71,59 @@ function buildSnUrl(row: any): string | null {
 export function ScheduledChangesPanel() {
   const [items, setItems] = useState<ChangeItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
+      setErrorMsg(null);
       try {
         const r = await fetch('/api/changes/today');
-        const j = await r.json();
-
-        // Accept multiple shapes and map to our UI model
-        const rows = coerceArray(j)
+        if (!r.ok) {
+          setErrorMsg(`API returned ${r.status}`);
+          setItems([]);
+          return;
+        }
+        const payload = await r.json();
+        const rows = coerceArray(payload)
           .map((row: any): ChangeItem => {
-            // tolerate various field names from the API layer
-            const start =
-              row.start ??
-              row.start_date ??
-              row.planned_start_date ??
-              row.window_start ??
-              null;
-
-            const end =
-              row.end ??
-              row.end_date ??
-              row.planned_end_date ??
-              row.window_end ??
-              null;
+            const start = row.start ?? row.start_date ?? row.planned_start_date ?? row.window_start ?? null;
+            const end   = row.end   ?? row.end_date   ?? row.planned_end_date   ?? row.window_end   ?? null;
 
             return {
-              id: row.id ?? row.sys_id ?? row.number ?? crypto.randomUUID(),
-              summary:
-                row.summary ??
-                row.short_description ??
-                row.description ??
-                '(no summary)',
-              start: toIsoLike(start),
-              end: toIsoLike(end),
-              state: row.state ?? row.status ?? null,
-              type: row.type ?? row.change_type ?? null,
-              url: buildSnUrl(row),
+              id: asText(row.id ?? row.sys_id ?? row.number ?? `${row.sys_id || ''}:${row.number || ''}`),
+              summary: asText(row.summary ?? row.short_description ?? row.description ?? '(no summary)'),
+              start,
+              end,
+              state: asText(row.state ?? row.status ?? ''),
+              type: asText(row.type ?? row.change_type ?? ''),
+              url: buildUrl(row),
+              sys_id: asText(row.sys_id ?? ''),
+              number: asText(row.number ?? ''),
               ...row,
             };
           })
-          // hide cancelled
-          .filter((row: ChangeItem) => !looksCancelled(row.state))
-          // show things that overlap "today" OR explicitly start/end today
-          // (API already tries to do this, but this keeps the UI resilient)
+          .filter((row: ChangeItem) => !isCancelled(row.state))
           .filter((row: ChangeItem) => {
-            // if we don't have dates, keep it (don’t hide useful entries)
-            if (!row.start && !row.end) return true;
+            // Show things relevant to *today* even if dates are missing
+            const ds = safeParse(row.start);
+            const de = safeParse(row.end);
+            if (!ds && !de) return true;
+
             const now = new Date();
-            const start = row.start ? new Date(row.start) : null;
-            const end = row.end ? new Date(row.end) : null;
+            const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+            const dayEnd   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
-            const dayStart = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
-              0, 0, 0, 0
-            );
-            const dayEnd = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
-              23, 59, 59, 999
-            );
-
-            // Overlap logic: [start, end] intersects [dayStart, dayEnd]
-            if (start && end) return start <= dayEnd && end >= dayStart;
-            if (start && !end) return start <= dayEnd; // started today or before and ongoing
-            if (!start && end) return end >= dayStart; // ends today
+            if (ds && de) return ds <= dayEnd && de >= dayStart; // window overlaps today
+            if (ds && !de) return ds <= dayEnd;                   // started today or earlier
+            if (!ds && de) return de >= dayStart;                 // ends today
             return true;
           });
 
         setItems(rows);
-      } catch (err) {
-        console.error('Failed to load changes:', err);
+      } catch (e) {
+        console.error('Failed to load /api/changes/today', e);
+        setErrorMsg('Failed to load changes.');
         setItems([]);
       } finally {
         setLoading(false);
@@ -143,37 +139,35 @@ export function ScheduledChangesPanel() {
       contentClassName="pt-2"
     >
       {loading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-16 w-full" />
-          ))}
-        </div>
+        <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) =>
+          <Skeleton key={i} className="h-16 w-full" />
+        )}</div>
+      ) : errorMsg ? (
+        <div className="text-center text-destructive py-6">{errorMsg}</div>
       ) : items.length === 0 ? (
         <div className="text-center text-muted-foreground py-6">
           No changes scheduled today.
         </div>
       ) : (
         <ul className="divide-y">
-          {items.map((ch) => {
-            const start = ch.start ? new Date(ch.start) : null;
-            const end = ch.end ? new Date(ch.end) : null;
-
+          {items.map(ch => {
+            const dStart = safeParse(ch.start);
+            const dEnd = safeParse(ch.end);
             return (
               <li key={ch.id} className="py-3 flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="font-medium text-foreground truncate">
-                    {ch.summary}
+                    {asText(ch.summary)}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {start ? format(start, 'p') : '—'} – {end ? format(end, 'p') : '—'}
+                    {safeTime(dStart)} – {safeTime(dEnd)}
                     {' · '}
-                    {(ch.type || 'Change')}{' '}
-                    {ch.state ? `(${String(ch.state)})` : ''}
+                    {asText(ch.type) || 'Change'} {ch.state ? `(${asText(ch.state)})` : ''}
                   </div>
                 </div>
                 {ch.url ? (
                   <a
-                    href={ch.url}
+                    href={asText(ch.url)}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center text-xs text-primary hover:underline flex-shrink-0"
