@@ -383,20 +383,11 @@ app.get('/api/monitoring/alerts', async (c) => {
   const cfAccessClientSecret = (c.env as any).CF_ACCESS_CLIENT_SECRET as string | undefined;
 
   // Example SWQL – adjust columns to match your instance’s schema if needed
-  const query = `
-    SELECT 
-      AlertObjectID,
-      DisplayName,
-      Acknowledged,
-      TriggeredOn,
-      ObjectType,
-      ObjectName,
-      RelatedNodeID,
-      RelatedNode.Caption AS NodeCaption,
-      DetailsUrl
-    FROM Orion.Alerts
-    ORDER BY TriggeredOn DESC
-  `;
+  const query =
+    "SELECT TOP 100 aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggerTimeStamp, aa.Acknowledged, aa.Severity " +
+    "FROM Orion.AlertActive aa " +
+    "JOIN Orion.AlertObjects ao ON aa.AlertObjectID = ao.AlertObjectID " +
+    "ORDER BY aa.TriggerTimeStamp DESC";
 
   const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
