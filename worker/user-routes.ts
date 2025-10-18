@@ -7,6 +7,38 @@ import type { Vendor, VendorStatus, VendorStatusOption, ServiceNowConfig, Outage
 import { format, subDays } from 'date-fns';
 import { startOfToday, endOfToday } from 'date-fns';
 
+// ---------- KV helpers (NEW) ----------
+async function kvGet(c: any, key: string): Promise<string | null> {
+  try {
+    const kv = (c.env as any).KV;
+    if (kv && typeof kv.get === 'function') {
+      return await kv.get(key);
+    }
+  } catch (e) {
+    // best-effort; do not throw
+    console.error('KV read error for key', key, e);
+  }
+  return null;
+}
+
+async function kvGetBool(c: any, key: string, fallbackEnv?: string | undefined): Promise<boolean> {
+  const raw = (await kvGet(c, key)) ?? fallbackEnv ?? '';
+  const v = String(raw).trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+async function kvGetString(c: any, key: string, fallbackEnv?: string | undefined): Promise<string> {
+  const raw = (await kvGet(c, key));
+  return (raw != null ? raw : (fallbackEnv ?? '')).toString();
+}
+
+function csvToList(raw: string): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
 // Helper to safely access nested properties from a JSON object
 const getProperty = (objectData: any, path: string): any => {
   const value = path.split('.').reduce((accumulator, part) => accumulator && accumulator[part], objectData);
@@ -30,7 +62,7 @@ const safeParseDate = (dateStr: any): string => {
   return date.toISOString();
 };
 
-// FIXED: New helper for detailed ServiceNow API logging
+// Helper for detailed ServiceNow API logging
 async function logServiceNowInteraction(endpoint: string, request: Request, response: Response): Promise<{ response: Response; data: any }> {
   const sanitizedHeaders: Record<string, string> = {};
   request.headers.forEach((value, key) => {
@@ -99,22 +131,18 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     }, 500);
   });
 
-  // ADDED: Config endpoint to check if management is enabled
-  app.get('/api/config', (c) => {
-    const enableManagement = c.env.ENABLE_MANAGEMENT === 'true';
-    return c.json({
-      enableManagement,
-    });
+  // ADDED: Config endpoint to check if management is enabled (now reads KV with env fallback)
+  app.get('/api/config', async (c) => {
+    const enableManagement = await kvGetBool(c, 'ENABLE_MANAGEMENT', c.env.ENABLE_MANAGEMENT as any);
+    return c.json({ enableManagement });
   });
 
-  // ADDED: Middleware to check if management features are enabled
+  // ADDED: Middleware to check if management features are enabled (KV-aware)
   const checkManagementEnabled = async (c: any, next: any) => {
-    const enableManagement = c.env.ENABLE_MANAGEMENT === 'true';
-    
+    const enableManagement = await kvGetBool(c, 'ENABLE_MANAGEMENT', c.env.ENABLE_MANAGEMENT as any);
     if (!enableManagement) {
       return c.json({ error: 'Management features are disabled' }, 403);
     }
-    
     await next();
   };
 
@@ -242,7 +270,7 @@ export function userRoutes(app: Hono<{ Bindings: Env }>) {
     return ok(c, body);
   });
 
-  // — ACTIVE OUTAGES (Now Dynamic) - FIXED —
+  // — ACTIVE OUTAGES (Now Dynamic)
   app.get('/api/outages/active', async (c) => {
     try {
       console.log('Step 1: Starting /api/outages/active request');
@@ -421,7 +449,9 @@ app.get('/api/monitoring/alerts', async (c) => {
   };
 
   // link builder with optional UI override
-  const uiBase = (c.env as any).SOLARWINDS_UI_BASE || ''; // e.g. https://sw.example.com
+  // NEW: prefer KV override; fall back to ENV; else derive from apiUrl
+  const kvUiBase = await kvGetString(c, 'SOLARWINDS_UI_BASE', (c.env as any).SOLARWINDS_UI_BASE);
+  const uiBase = kvUiBase || ''; // e.g. https://sw.example.com
   const toAbsoluteUrl = (maybeUrl?: string | null) => {
     if (!maybeUrl) return 'N/A';
 
@@ -479,12 +509,9 @@ app.get('/api/monitoring/alerts', async (c) => {
     const json = await resp.json() as { results?: any[] };
     let rows = Array.isArray(json.results) ? json.results : [];
 
-    // Filter out excluded captions via plaintext env var (CSV)
-    // Example value:  "Some noisy thing, some other noisy thing"
-    const excludeList = (c.env.SOLARWINDS_EXCLUDE_CAPTIONS ?? "")
-      .split(",")
-      .map((v) => v.trim().toLowerCase())
-      .filter(Boolean);
+    // Filter out excluded captions via KV CSV (fallback to ENV)
+    const exCsv = await kvGetString(c, 'SOLARWINDS_EXCLUDE_CAPTIONS', (c.env as any).SOLARWINDS_EXCLUDE_CAPTIONS);
+    const excludeList = csvToList(exCsv).map(v => v.toLowerCase());
 
     rows = rows.filter((r) => {
       const caption = String(r.EntityCaption || '').toLowerCase();
@@ -496,7 +523,7 @@ app.get('/api/monitoring/alerts', async (c) => {
       type: r.EntityCaption || 'Unknown',
       affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
       timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
-      severity: 'Info', // you can enrich later
+      severity: 'Info',
       validated: Boolean(r.Acknowledged ?? false),
     }));
 
@@ -507,7 +534,7 @@ app.get('/api/monitoring/alerts', async (c) => {
   }
 });
 
-  // — SERVICENOW TICKETS (Now Dynamic) - FIXED —
+  // — SERVICENOW TICKETS
   app.get('/api/servicenow/tickets', async (c) => {
     const configEntity = new ServiceNowConfigEntity(c.env);
     const config = await configEntity.getState();
