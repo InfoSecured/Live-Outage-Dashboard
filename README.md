@@ -1,107 +1,190 @@
 # Live Outage Dashboard
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/J-Lazerus_Ebank/infrastructure.status-page)
+A real-time operations dashboard that provides a unified view of system status by aggregating data from multiple sources. Built for IT, NOC, and incident-response teams who need a single-pane-of-glass view of their operational environment.
 
-Aegis is a sophisticated, real-time command center dashboard designed for enterprise infrastructure and security teams. It provides a unified, single-pane-of-glass view of system health by aggregating data from critical sources including ServiceNow for incident management, various vendor status pages for third-party service health, and SolarWinds for internal monitoring alerts. The dashboard is structured into modular, information-dense panels, allowing operators to quickly assess active outages, monitor vendor stability, triage alerts, and track related ServiceNow tickets.
+The dashboard integrates with ServiceNow for outages, change controls, and tickets; SolarWinds for monitoring alerts; vendor status APIs for external service health; and Microsoft Teams Bridges for collaboration calls. The entire application runs on Cloudflare Workers with React for the frontend, providing a fast, globally distributed, and highly available platform.
 
-## Key Features
+## ✨ Key Features
 
--   **🔴 Active Outages Panel:** Displays real-time outage information from ServiceNow, including impact, start time, and collaboration links.
--   **📊 Vendor Status Aggregator:** Color-coded status summaries from key third-party vendors.
--   **🛠️ Monitoring Alerts Feed:** A live feed of alerts from monitoring tools like SolarWinds.
--   **📁 Recent ServiceNow Tickets:** A view of recent outage-related tickets with quick links.
--   **📞 Active Collaboration Bridges:** Lists active Teams calls related to ongoing incidents.
--   **📈 Outage Trends & History:** Visualizes historical outage data for trend analysis and reporting.
--   **🔍 Powerful Search & Filtering:** Comprehensive search and filtering across all data panels.
--   **🌙 Dark-Theme First:** A modern, professional, and data-centric UI optimized for operations centers.
+* 🔴 **Active Outages Panel** - Real-time ServiceNow outages with impact level, ETA, and direct bridge links
+* 📊 **Vendor Status Aggregator** - Polls JSON APIs and dynamically evaluates operational status
+* 🛠️ **Monitoring Alerts Feed** - Displays SolarWinds alerts with filtering and caption exclusion support
+* 📁 **ServiceNow Tickets** - Lists current tickets with quick navigation links
+* 📞 **Collaboration Bridges** - Shows Teams bridges created for active incidents
+* 📈 **Outage Trends** - Aggregates outage history from ServiceNow for pattern analysis
+* 🔄 **Change Control Overview** - Displays scheduled and implementing changes for the current day
+* 🌙 **Dark-Mode Design** - Built specifically for 24/7 operations environments
 
-## Technology Stack
+## 🛠️ Technology Stack
 
--   **Frontend:** React, Vite, Tailwind CSS, shadcn/ui
--   **Backend:** Hono on Cloudflare Workers
--   **State Management:** Zustand
--   **Data Visualization:** Recharts
--   **UI/UX:** Framer Motion, Lucide React
--   **Utilities:** date-fns, TypeScript
+* **Frontend**: React + Vite + Tailwind CSS + shadcn/ui
+* **Backend**: Hono (TypeScript) running on Cloudflare Workers
+* **Storage**: Cloudflare Durable Objects + KV Namespace
+* **Visualization**: Recharts
+* **State Management**: Zustand
+* **Animations**: Framer Motion
+* **Icons**: Lucide React
+* **Utilities**: date-fns for time logic
 
-## Getting Started
+## 📋 Environment Variables
 
-Follow these instructions to get the project up and running on your local machine for development and testing purposes.
+### Required
 
-### Prerequisites
+| Variable | Description |
+|----------|-------------|
+| `SERVICENOW_USERNAME` | ServiceNow API username |
+| `SERVICENOW_PASSWORD` | ServiceNow API password |
+| `SOLARWINDS_USERNAME` | SolarWinds API username |
+| `SOLARWINDS_PASSWORD` | SolarWinds API password |
+| `GlobalDurableObject` | Durable Object binding (auto-created) |
+| `KV` | Cloudflare KV binding (manual) |
 
--   [Bun](https://bun.sh/) installed on your machine.
--   [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) for interacting with the Cloudflare platform.
+### Optional
 
-### Installation
+| Variable | Description |
+|----------|-------------|
+| `ENABLE_MANAGEMENT` | Enables management UI when `true` |
+| `SOLARWINDS_UI_BASE` | Override base URL for SolarWinds alerts |
+| `SOLARWINDS_EXCLUDE_CAPTIONS` | CSV list of captions to filter out |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Optional Cloudflare Access credentials |
+| `SERVICENOW_TICKET_URL_PREFIX` | Overrides ticket deep link format |
 
-1.  **Clone the repository:**
-    ```sh
-    git clone <repository-url>
-    cd aegis_outage_dashboard
-    ```
+## 🚀 Installation Instructions
 
-2.  **Install dependencies:**
-    This project uses Bun as the package manager.
-    ```sh
-    bun install
-    ```
+### 1. Clone the repository
 
-### Running the Development Server
+```bash
+git clone https://github.com/InfoSecured/Live-Outage-Dashboard.git
+cd Live-Outage-Dashboard
+```
 
-To start the local development server, which includes both the Vite frontend and the Hono backend worker, run:
+### 2. Install dependencies (using Bun)
 
-```sh
+```bash
+bun install
+```
+
+### 3. Run locally (frontend + backend)
+
+```bash
 bun dev
 ```
 
-The application will be available at `http://localhost:3000`.
+The app runs on `http://localhost:3000`.
 
-## Project Structure
+## ☁️ Deployment Guide
 
-The project is organized into three main directories:
+### 8.1 Build locally
 
--   `src/`: Contains the React frontend application code, including pages, components, hooks, and styles.
--   `worker/`: Contains the Hono backend code that runs on Cloudflare Workers. This is where API routes and data logic reside.
--   `shared/`: Contains TypeScript types and mock data shared between the frontend and the backend to ensure type safety.
+```bash
+bun run build
+```
 
-## Development
+### 8.2 Deploy via Wrangler
 
-### Frontend
+```bash
+bun run deploy
+```
 
-The frontend is a standard React application built with Vite. Components are primarily built using **shadcn/ui** and styled with **Tailwind CSS**.
+**Ensure authentication:**
 
--   **Pages:** Located in `src/pages/`. The main entry point is `HomePage.tsx`.
--   **Components:** Reusable components are located in `src/components/`.
--   **API Calls:** A simple API client is provided in `src/lib/api-client.ts` for making requests to the backend.
+```bash
+npx wrangler login
+```
 
-### Backend (Cloudflare Worker)
+### 8.3 Continuous Deployment (Cloudflare Pages)
 
-The backend is a Hono application running on a Cloudflare Worker.
+* Connect the GitHub repo to Cloudflare Pages
+* Cloudflare automatically detects the Worker backend in `/worker/`
+* The included button should link directly to your repo:
 
--   **API Routes:** New API endpoints should be added in `worker/user-routes.ts`.
--   **Data Persistence:** The template uses a single Durable Object for data persistence, abstracted via entity classes in `worker/entities.ts`.
--   **Mock Data:** Initial data for development is located in `shared/mock-data.ts`.
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/InfoSecured/Live-Outage-Dashboard)
 
-## Deployment
+## 🔧 KV Namespace Setup
 
-This application is designed to be deployed to Cloudflare Pages with a Functions backend.
+Create a KV namespace for configuration storage:
 
-1.  **Build the project:**
-    ```sh
-    bun run build
-    ```
+```bash
+npx wrangler kv:namespace create "status-page-env"
+```
 
-2.  **Deploy to Cloudflare:**
-    Run the deploy command using the Wrangler CLI. Make sure you are logged in (`wrangler login`).
-    ```sh
-    bun run deploy
-    ```
+Then modify `wrangler.jsonc`:
 
-Alternatively, you can connect your GitHub repository to Cloudflare Pages for continuous deployment.
+```jsonc
+{
+  "kv_namespaces": [
+    { "binding": "KV", "id": "<your_namespace_id>" }
+  ]
+}
+```
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/J-Lazerus_Ebank/infrastructure.status-page)
+Populate KV keys via Cloudflare Dashboard → **Workers & Pages** → **KV** → **status-page-env** → **Add Key**.
 
-## License
+**Example:**
+
+```bash
+ENABLE_MANAGEMENT = true
+SOLARWINDS_EXCLUDE_CAPTIONS = "heartbeat, test alert"
+```
+
+## 📂 Project Structure
+
+```
+src/        → React frontend (UI components, pages)
+worker/     → Cloudflare Worker backend (Hono routes, Durable Objects)
+shared/     → Shared TypeScript types and mock data
+```
+
+### Highlight:
+
+* `worker/user-routes.ts` — main API routes
+* `worker/core-utils.ts` — KV + Durable Object definitions
+* `wrangler.jsonc` — Worker configuration
+
+## 🔐 Backend (Cloudflare Worker)
+
+The backend is built with the **Hono framework** for Cloudflare Workers.
+
+### Key Routes:
+
+* `/api/vendors` - Vendor status aggregation
+* `/api/outages` - ServiceNow outages
+* `/api/monitoring/alerts` - SolarWinds monitoring feed
+* `/api/servicenow/*` - ServiceNow ticket and change control data
+* `/api/changes/today` - Today's change schedule
+
+### Storage:
+
+* **Durable Object** (`GlobalDurableObject`) for entity storage and indexing
+* **KV Namespace** for configuration values like UI settings or exclusions
+
+### Logging:
+
+Includes robust logging (`logServiceNowInteraction`) for debugging.
+
+### Secrets:
+
+Set secrets using:
+
+```bash
+npx wrangler secret put SERVICENOW_USERNAME
+npx wrangler secret put SERVICENOW_PASSWORD
+```
+
+## 💻 Frontend Overview
+
+* **Framework**: React + Vite
+* **UI Library**: Tailwind CSS + shadcn/ui
+* **Charts**: Recharts
+* **State**: Zustand
+* **Animations**: Framer Motion
+* **API Layer**: `/src/lib/api-client.ts` uses Hono endpoints
+* **Theme**: Dark mode optimized for NOC dashboards
+
+## 📜 License
 
 This project is licensed under the MIT License.
+
+---
+
+**Built with ☁️ Cloudflare Workers | 🚀 React + Vite | 🎨 Tailwind CSS**
