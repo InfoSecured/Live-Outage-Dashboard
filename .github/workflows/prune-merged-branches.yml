@@ -1,0 +1,64 @@
+name: Prune merged branches (weekly)
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays at 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to delete refs
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List merged branches (via API)
+        id: list
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Get all branches except default
+            const { data: branches } = await github.rest.repos.listBranches({
+              owner, repo, protected: false, per_page: 100
+            });
+
+            // Get default branch to skip
+            const { data: repoInfo } = await github.rest.repos.get({ owner, repo });
+            const defaultBranch = repoInfo.default_branch;
+
+            const merged = [];
+            for (const b of branches) {
+              if (b.name === defaultBranch) continue;
+
+              // Find PRs that merged this branch into default
+              const { data: prs } = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} is:pr is:merged head:${b.name} base:${defaultBranch}`
+              });
+
+              if (prs.total_count > 0) merged.push(b.name);
+            }
+
+            core.setOutput("merged", JSON.stringify(merged));
+
+      - name: Delete merged branches
+        if: ${{ steps.list.outputs.merged != '[]' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const merged = JSON.parse(core.getInput('merged', { required: false }) || '[]');
+
+            for (const name of merged) {
+              core.info(`Deleting ${name}`);
+              await github.rest.git.deleteRef({
+                owner, repo, ref: `heads/${name}`
+              }).catch(err => {
+                core.warning(`Skip ${name}: ${err.message}`);
+              });
+            }
+        env:
+          merged: ${{ steps.list.outputs.merged }}
