@@ -1,0 +1,25 @@
+name: Branch name policy
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          echo "Branch: $BRANCH"
+          # Allowed: feature/*, bugfix/*, hotfix/*, patch/*, chore/*, docs/*
+          if echo "$BRANCH" | grep -Eq '^(feature|bugfix|hotfix|patch|chore|docs)/[a-z0-9._-]+$'; then
+            echo "✅ Branch name OK"
+          else
+            echo "❌ Branch name must start with feature/, bugfix/, hotfix/, patch/, chore/, or docs/"
+            exit 1
+          fi
