@@ -15,6 +15,7 @@ type ChangeItem = {
   url?: string | null;
   sys_id?: string;
   number?: string;
+  __isHot?: boolean;
   [k: string]: any;
 };
 
@@ -83,37 +84,54 @@ export function ScheduledChangesPanel() {
       setLoading(true);
       setErrorMsg(null);
       try {
-        const r = await fetch('/api/changes/today');
-        if (!r.ok) {
-          setErrorMsg(`API returned ${r.status}`);
+        const [rChanges, rOutages] = await Promise.all([
+          fetch('/api/changes/today'),
+          fetch('/api/outages/active'),
+        ]);
+
+        if (!rChanges.ok) {
+          setErrorMsg(`API returned ${rChanges.status}`);
           setItems([]);
           return;
         }
-        const payload = await r.json();
+
+        const payload = await rChanges.json();
+        const outagesPayload = rOutages.ok ? await rOutages.json() : { data: [] };
+
+        const outageRows = coerceArray(outagesPayload?.data ?? outagesPayload); // handle ApiResponse or raw
+        const hotOfferings = new Set(
+          outageRows
+            .map((o: any) =>
+              asText(o?.offering ?? o?.service_offering ?? '')
+                .trim()
+                .toLowerCase()
+            )
+            .filter(Boolean)
+        );
+
         const rows = coerceArray(payload)
           .map((row: any): ChangeItem => {
             const start = row.start ?? row.start_date ?? row.planned_start_date ?? row.window_start ?? null;
             const end   = row.end   ?? row.end_date   ?? row.planned_end_date   ?? row.window_end   ?? null;
+            const offering = asText(row.offering ?? row.service_offering ?? '').trim();
 
             return {
               id: asText(row.id ?? row.sys_id ?? row.number ?? `${row.sys_id || ''}:${row.number || ''}`),
               number: asText(row.number ?? ''),
               summary: asText(row.summary ?? row.short_description ?? row.description ?? '(no summary)'),
-              offering: asText(row.offering ?? row.service_offering ?? ''), // ✅ flatten offering
+              offering,
               start,
               end,
               state: asText(row.state ?? row.status ?? ''),
               type: asText(row.type ?? row.change_type ?? ''),
               url: buildUrl(row),
               sys_id: asText(row.sys_id ?? ''),
+              __isHot: offering ? hotOfferings.has(offering.toLowerCase()) : false,
               ...row,
             };
           })
-          // exclude cancelled
           .filter((row: ChangeItem) => !isCancelled(row.state))
-          // include only Scheduled/Implement/Review
           .filter((row: ChangeItem) => isAllowedState(row.state))
-          // time window overlaps today (or missing dates allowed)
           .filter((row: ChangeItem) => {
             const ds = safeParse(row.start);
             const de = safeParse(row.end);
@@ -128,7 +146,6 @@ export function ScheduledChangesPanel() {
             if (!ds && de) return de >= dayStart;                 // ends today
             return true;
           })
-          // sort by start time (nulls last)
           .sort((a, b) => {
             const da = safeParse(a.start);
             const db = safeParse(b.start);
@@ -140,7 +157,7 @@ export function ScheduledChangesPanel() {
 
         setItems(rows);
       } catch (e) {
-        console.error('Failed to load /api/changes/today', e);
+        console.error('Failed to load changes/outages', e);
         setErrorMsg('Failed to load changes.');
         setItems([]);
       } finally {
@@ -173,39 +190,66 @@ export function ScheduledChangesPanel() {
           {items.map((ch) => {
             const dStart = safeParse(ch.start);
             const dEnd = safeParse(ch.end);
+            const isHot = Boolean(ch.__isHot);
+
             return (
-              <li key={ch.id} className="py-3 flex items-start justify-between gap-4">
+              <li
+                key={ch.id}
+                data-hot={isHot || undefined}
+                className={`py-3 flex items-start justify-between gap-4 pl-3 border-l-4 ${
+                  isHot ? 'border-red-500/80' : 'border-transparent'
+                }`}
+                aria-label={isHot ? 'Scheduled change overlaps an active outage' : undefined}
+                title={isHot ? 'This change matches a service with an active outage' : undefined}
+              >
                 <div className="min-w-0">
-                  <div className="font-medium text-foreground truncate">
-                    {(ch.number ? ch.number + ' — ' : '') +
-                      (ch.offering ? ch.offering + ' — ' : '') +
-                      (ch.summary || '')}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {safeTime(dStart)} – {safeTime(dEnd)}
-                    {' · '}
-                    <span>
+                  <div className="font-medium text-foreground truncate flex items-center gap-2">
+                    {isHot && (
                       <span
-                        className={
-                          asText(ch.type).toLowerCase().includes('emergency')
-                            ? 'text-red-600 font-medium'
-                            : 'text-muted-foreground'
-                        }
+                        className="relative inline-flex items-center"
+                        aria-hidden="true"
                       >
-                        {asText(ch.type) || 'Change'}
-                      </span>{' '}
-                      <span className="text-muted-foreground">
-                        {ch.state ? `(${asText(ch.state)})` : ''}
+                        <span className="h-2 w-2 rounded-full bg-red-500"></span>
+                        <span className="absolute inline-flex h-2 w-2 rounded-full bg-red-500 opacity-75 animate-ping"></span>
                       </span>
+                    )}
+                    <span className="truncate">
+                      {(ch.number ? ch.number + ' — ' : '') +
+                        (ch.offering ? ch.offering + ' — ' : '') +
+                        (ch.summary || '')}
                     </span>
                   </div>
+
+                  <div className="text-xs text-muted-foreground flex items-center gap-2">
+                    <span>
+                      {safeTime(dStart)} – {safeTime(dEnd)}
+                      {' · '}
+                      {asText(ch.type) || 'Change'}{' '}
+                      {ch.state ? (
+                        <span className={/emergency/i.test(asText(ch.type)) ? 'text-red-600 dark:text-red-400' : ''}>
+                          ({asText(ch.state)})
+                        </span>
+                      ) : null}
+                    </span>
+
+                    {isHot && (
+                      <span
+                        className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+                        title="Active outage for this service"
+                      >
+                        Active outage
+                      </span>
+                    )}
+                  </div>
                 </div>
+
                 {ch.url ? (
                   <a
                     href={asText(ch.url)}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center text-xs text-primary hover:underline flex-shrink-0"
+                    title="Open in ServiceNow"
                   >
                     View <ExternalLink className="ml-1 h-3 w-3" />
                   </a>
