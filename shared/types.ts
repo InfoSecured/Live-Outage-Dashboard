@@ -60,6 +60,7 @@ export interface CollaborationBridge {
   duration: string; // e.g., "45m"
   isHighSeverity: boolean;
   teamsCallUrl: string;
+  externalId?: string;
 }
 // New ServiceNow Configuration Types
 export interface ServiceNowFieldMapping {
