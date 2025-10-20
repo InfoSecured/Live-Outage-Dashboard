@@ -4,6 +4,11 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Calendar, ExternalLink } from 'lucide-react';
 import { format } from 'date-fns';
 
+type Props = {
+  managementEnabled?: boolean;
+  refreshTick?: number; // NEW
+};
+
 type ChangeItem = {
   id: string;
   summary: string;
@@ -74,7 +79,7 @@ function buildUrl(row: any): string | null {
   return null;
 }
 
-export function ScheduledChangesPanel() {
+export function ScheduledChangesPanel({ managementEnabled, refreshTick }: Props) {
   const [items, setItems] = useState<ChangeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -166,6 +171,30 @@ export function ScheduledChangesPanel() {
     })();
   }, []);
 
+  useEffect(() => {
+    const ac = new AbortController();
+    (async () => {
+      setLoading(true);
+      setErrorMsg(null);
+      try {
+        const [rChanges, rOutages] = await Promise.all([
+          fetch('/api/changes/today', { signal: ac.signal }),
+          fetch('/api/outages/active', { signal: ac.signal }),
+        ]);
+        // ...existing parsing...
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') {
+          console.error('Failed to load changes/outages', e);
+          setErrorMsg('Failed to load changes.');
+          setItems([]);
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => ac.abort();
+  }, [refreshTick]); // <— trigger on tick
+  
   return (
     <DataCard
       title="Scheduled Changes (Today)"
