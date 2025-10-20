@@ -408,18 +408,19 @@ app.get('/api/monitoring/alerts', async (c) => {
 
   const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
-  // Primary (B)
+  // Primary (B) – includes RelatedNodeCaption + EntityType
   const queryB =
-    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggeredDateTime, aa.Acknowledged, " +
-    "       ao.AlertConfigurations.Name AS AlertName " +
+    "SELECT aa.AlertObjectID, " +
+    "       ao.EntityCaption, ao.RelatedNodeCaption, ao.EntityType, ao.EntityDetailsUrl, " +
+    "       aa.TriggeredDateTime, aa.Acknowledged " +
     "FROM Orion.AlertActive AS aa " +
     "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
     "ORDER BY aa.TriggeredDateTime DESC";
-  
+
   // Fallback (A)
   const queryA =
-    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, " +
-    "       ao.AlertConfigurations.Name AS AlertName " +
+    "SELECT aa.AlertObjectID, " +
+    "       ao.EntityCaption, ao.RelatedNodeCaption, ao.EntityType, ao.EntityDetailsUrl " +
     "FROM Orion.AlertActive AS aa " +
     "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
     "ORDER BY aa.AlertObjectID DESC";
@@ -450,34 +451,23 @@ app.get('/api/monitoring/alerts', async (c) => {
     return resp;
   };
 
-  // link builder with optional UI override
-  // NEW: prefer KV override; fall back to ENV; else derive from apiUrl
+  // link builder with optional UI override (KV > ENV > derive)
   const kvUiBase = await kvGetString(c, 'SOLARWINDS_UI_BASE', (c.env as any).SOLARWINDS_UI_BASE);
-  const uiBase = kvUiBase || ''; // e.g. https://sw.example.com
+  const uiBase = kvUiBase || '';
   const toAbsoluteUrl = (maybeUrl?: string | null) => {
     if (!maybeUrl) return 'N/A';
-
-    // Already absolute?
     const isAbsolute = /^https?:\/\//i.test(maybeUrl);
 
-    // If override base provided, always use it (preserve path+query from original)
     if (uiBase) {
       try {
         if (isAbsolute) {
           const original = new URL(maybeUrl);
           return new URL(`${original.pathname}${original.search}`, uiBase).toString();
         }
-        // relative + override
         return new URL(maybeUrl, uiBase).toString();
-      } catch {
-        // fall through
-      }
+      } catch { /* fall through */ }
     }
-
-    // No override: if absolute, keep it
     if (isAbsolute) return maybeUrl;
-
-    // Relative + no override: derive base from apiUrl
     try {
       const base = new URL(config.apiUrl);
       return new URL(maybeUrl, `${base.protocol}//${base.host}`).toString();
@@ -486,15 +476,33 @@ app.get('/api/monitoring/alerts', async (c) => {
     }
   };
 
+  // Build a display title as "NODE — issue", with NODE uppercased.
+  const titleFrom = (r: any) => {
+    const nodeRaw = (r.RelatedNodeCaption ?? '').toString().trim();
+    const entityType = (r.EntityType ?? '').toString();
+    const entityCaption = (r.EntityCaption ?? 'Alert').toString().trim();
+
+    // If RelatedNodeCaption is missing but the object IS a node,
+    // treat EntityCaption as the node name and still show "NODE — issue"
+    let node = nodeRaw;
+    let issue = entityCaption;
+
+    if (!node && entityType === 'Orion.Nodes') {
+      node = entityCaption;      // node name comes from EntityCaption
+      // issue remains entityCaption unless you later add AlertName to the query
+    }
+
+    const nodeUP = node ? node.toUpperCase() : '';
+    return nodeUP ? `${nodeUP} — ${issue}` : issue;
+  };
+
   try {
     // try B first
     let resp = await run(queryB);
 
-    // if schema says “no TriggeredDateTime”, fall back to A
     if (!resp.ok) {
       const txt = await resp.text();
       console.error(`SolarWinds API Error (${resp.status}) on query B: ${txt}`);
-
       if (resp.status === 400) {
         resp = await run(queryA);
       } else {
@@ -521,19 +529,32 @@ app.get('/api/monitoring/alerts', async (c) => {
     });
 
     const alerts: MonitoringAlert[] = rows.map((r) => {
-      const nodeCaption = r.EntityCaption || 'Unknown';
-      const issue = r.AlertName || 'Alert';
+      const nodeRaw = (r.RelatedNodeCaption ?? '').toString().trim();
+      const entityType = (r.EntityType ?? '').toString();
+      const entityCaption = (r.EntityCaption ?? 'Alert').toString().trim();
+
+      // Decide node+issue as above, and uppercase the node for display + nodeCaption
+      let node = nodeRaw;
+      let issue = entityCaption;
+
+      if (!node && entityType === 'Orion.Nodes') {
+        node = entityCaption;
+      }
+
+      const nodeCaption = node ? node.toUpperCase() : '';
+
       return {
         id: String(r.AlertObjectID),
-        // keep existing field for backward-compat
-        type: nodeCaption,
-        nodeCaption,
-        issue,
+        type: titleFrom(r),                  // e.g., "SERVERNAME — SSL Certificate Expiration Date Monitor"
+        nodeCaption,                         // uppercase node (extra field for the UI if needed)
         affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
         timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
-        severity: 'Info',
+        severity: 'Info',                    // TODO: enrich if you add severity mapping
         validated: Boolean(r.Acknowledged ?? false),
-      };
+        // Keep 'issue' if your UI wants it later; harmless if unused:
+        // @ts-ignore allow extra field beyond shared types
+        issue,
+      } as any;
     });
 
     return ok(c, alerts);

@@ -43,6 +43,7 @@ export interface MonitoringAlert {
   severity: AlertSeverity;
   validated: boolean;
   nodeCaption?: string;
+  issue?: string;
 }
 export interface ServiceNowTicket {
   id: string;
