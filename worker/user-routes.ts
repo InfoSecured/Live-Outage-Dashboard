@@ -670,6 +670,120 @@ app.get('/api/monitoring/alerts', async (c) => {
     return ok(c, { id, deleted });
   });
 
+  // — COLLABORATION BRIDGES by externalId (upsert & delete) —
+  // Allows Power Automate (or other systems) to upsert/delete by a stable MeetingId (externalId)
+  app.post('/api/collaboration/bridges/upsert', checkManagementEnabled, async (c) => {
+    type UpsertBody = {
+      externalId: string;           // e.g., MeetingId from Teams invite
+      title?: string;
+      participants?: number;
+      isHighSeverity?: boolean;
+      teamsCallUrl: string;         // required to surface the "Join" link
+      startedAt?: string | null;    // ISO string (optional)
+      endedAt?: string | null;      // ISO string (optional)
+      duration?: string | null;     // optional override (e.g., "45m") if you already computed it
+    };
+
+    const b = await c.req.json<Partial<UpsertBody>>();
+
+    const isNonEmpty = (v: unknown) => typeof v === 'string' ? v.trim().length > 0 : v != null;
+
+    if (!isNonEmpty(b.externalId)) {
+      return bad(c, 'externalId is required.');
+    }
+    if (!isNonEmpty(b.teamsCallUrl)) {
+      return bad(c, 'teamsCallUrl is required.');
+    }
+
+    // Compute duration if both timestamps provided and no explicit duration
+    const computeDurationLabel = (start?: string | null, end?: string | null): string | null => {
+      if (!start || !end) return null;
+      const s = new Date(start);
+      const e = new Date(end);
+      if (isNaN(s.getTime()) || isNaN(e.getTime())) return null;
+      const mins = Math.max(0, Math.round((e.getTime() - s.getTime()) / 60000));
+      const hours = Math.floor(mins / 60);
+      const rem = mins % 60;
+      if (hours > 0 && rem > 0) return `${hours}h ${rem}m`;
+      if (hours > 0) return `${hours}h`;
+      return `${rem}m`;
+    };
+
+    try {
+      // naive scan of existing bridges to find one with the same externalId
+      await CollaborationBridgeEntity.ensureSeed(c.env);
+      const { items } = await CollaborationBridgeEntity.list(c.env);
+      const existing = items.find((it: any) => (it as any).externalId === b.externalId);
+
+      // resolve duration
+      const autoDuration = computeDurationLabel(b.startedAt ?? null, b.endedAt ?? null);
+      const duration = b.duration ?? autoDuration ?? '0m';
+
+      if (existing) {
+        // update existing by id
+        const bridge = new CollaborationBridgeEntity(c.env, existing.id);
+        const current = await bridge.getState();
+        const next = {
+          ...current,
+          // core fields (fallback to current if not provided)
+          title: b.title ?? current.title ?? 'Bridge',
+          participants: typeof b.participants === 'number' ? b.participants : (current.participants ?? 0),
+          isHighSeverity: typeof b.isHighSeverity === 'boolean' ? b.isHighSeverity : (current.isHighSeverity ?? false),
+          teamsCallUrl: b.teamsCallUrl ?? current.teamsCallUrl,
+          duration,
+          // metadata
+          externalId: b.externalId,
+          startedAt: b.startedAt ?? (current as any).startedAt ?? null,
+          endedAt: b.endedAt ?? (current as any).endedAt ?? null,
+        } as any; // allow extra fields beyond the typed interface
+        await bridge.save(next);
+        return ok(c, next);
+      } else {
+        // create new
+        const newBridge = {
+          id: crypto.randomUUID(),
+          title: b.title ?? 'Bridge',
+          participants: typeof b.participants === 'number' ? b.participants : 0,
+          duration,
+          isHighSeverity: Boolean(b.isHighSeverity),
+          teamsCallUrl: String(b.teamsCallUrl),
+          // metadata
+          externalId: String(b.externalId),
+          startedAt: b.startedAt ?? null,
+          endedAt: b.endedAt ?? null,
+        } as any;
+
+        await CollaborationBridgeEntity.create(c.env, newBridge as any);
+        return ok(c, newBridge);
+      }
+    } catch (e) {
+      console.error('Upsert bridge by externalId failed:', e);
+      return bad(c, 'Failed to upsert collaboration bridge.');
+    }
+  });
+
+  app.delete('/api/collaboration/bridges/by-external/:externalId', checkManagementEnabled, async (c) => {
+    const externalId = c.req.param('externalId');
+    if (!externalId) return bad(c, 'externalId is required.');
+
+    try {
+      await CollaborationBridgeEntity.ensureSeed(c.env);
+      const { items } = await CollaborationBridgeEntity.list(c.env);
+      const existing = items.find((it: any) => (it as any).externalId === externalId);
+
+      if (!existing) {
+        // idempotent delete: OK even if missing
+        return ok(c, { deleted: false, reason: 'not found' });
+      }
+
+      const removed = await CollaborationBridgeEntity.delete(c.env, existing.id);
+      return ok(c, { deleted: removed, id: existing.id });
+    } catch (e) {
+      console.error('Delete bridge by externalId failed:', e);
+      return bad(c, 'Failed to delete collaboration bridge by externalId.');
+    }
+  });
+
   // — OUTAGE HISTORY (Trends) —
   // Matches SN list filter: **Begin on Last 7 days** AND type IN (degradation,outage)
   app.get('/api/outages/history', async (c) => {
