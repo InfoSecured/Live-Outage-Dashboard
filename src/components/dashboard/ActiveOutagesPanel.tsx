@@ -6,7 +6,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { AlertTriangle, Phone, Clock, Settings, AlertCircle } from 'lucide-react';
 import { formatDistanceToNow, parseISO, isWithinInterval } from 'date-fns';
 import type { Outage, ImpactLevel } from '@shared/types';
-import { api } from '@/lib/api-client';
 import { Toaster, toast } from '@/components/ui/sonner';
 import { useDashboardStore } from '@/stores/dashboard-store';
 import { useShallow } from 'zustand/react/shallow';
@@ -47,8 +46,13 @@ function getEtaTooltip(eta: string | null | undefined): string {
   }
 }
 
-// CHANGED: Added managementEnabled prop
-export function ActiveOutagesPanel({ managementEnabled }: { managementEnabled?: boolean }) {
+type Props = {
+  managementEnabled?: boolean;
+  /** Incremented by HomePage whenever a manual/auto refresh occurs */
+  refreshTick?: number;
+};
+
+export function ActiveOutagesPanel({ managementEnabled, refreshTick }: Props) {
   const [outages, setOutages] = useState<Outage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,25 +67,42 @@ export function ActiveOutagesPanel({ managementEnabled }: { managementEnabled?: 
     }))
   );
 
-  const fetchOutages = useCallback(async () => {
+  // Fetcher that supports aborting
+  const fetchOutages = useCallback(async (signal?: AbortSignal) => {
     try {
       setIsLoading(true);
       setError(null);
-      const data = await api<Outage[]>('/api/outages/active');
+
+      const res = await fetch('/api/outages/active', { signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const payload = await res.json();
+      // Accept either ApiResponse<T> or raw array
+      const data: Outage[] = Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload)
+          ? payload
+          : [];
+
       setOutages(data);
-    } catch (caught) {
-      const errorMessage = caught instanceof Error ? caught.message : 'Could not load active outages.';
-      setError(errorMessage);
+    } catch (caught: any) {
+      if (caught?.name === 'AbortError') return; // ignore stale requests
+      const msg = caught instanceof Error ? caught.message : 'Could not load active outages.';
+      setError(msg);
       setOutages([]);
-      toast.error(errorMessage);
+      toast.error(msg);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  // Re-fetch when either the global store counter or HomePage refreshTick changes
   useEffect(() => {
-    fetchOutages();
-  }, [refreshCounter, fetchOutages]);
+    const ac = new AbortController();
+    fetchOutages(ac.signal);
+    return () => ac.abort();
+    // include both so either mechanism triggers refresh
+  }, [refreshCounter, refreshTick, fetchOutages]);
 
   const filteredOutages = useMemo(() => {
     return outages.filter((outage) => {
@@ -106,7 +127,7 @@ export function ActiveOutagesPanel({ managementEnabled }: { managementEnabled?: 
     });
   }, [outages, searchQuery, selectedImpactLevels, dateRange]);
 
-  const isNotConfigured = error?.includes('not configured');
+  const isNotConfigured = error?.toLowerCase().includes('not configured');
 
   return (
     <>
@@ -116,7 +137,6 @@ export function ActiveOutagesPanel({ managementEnabled }: { managementEnabled?: 
         className="lg:col-span-2"
         contentClassName="pt-2"
         actions={
-          // CHANGED: Added conditional rendering for Manage button
           managementEnabled ? (
             <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
               <Settings className="size-4" />
@@ -153,7 +173,7 @@ export function ActiveOutagesPanel({ managementEnabled }: { managementEnabled?: 
       <ManageServiceNowSheet
         isOpen={isSheetOpen}
         onOpenChange={setIsSheetOpen}
-        onConfigUpdate={fetchOutages}
+        onConfigUpdate={() => fetchOutages()}
       />
     </>
   );
