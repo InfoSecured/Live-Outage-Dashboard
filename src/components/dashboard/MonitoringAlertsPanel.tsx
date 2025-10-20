@@ -53,17 +53,13 @@ export function MonitoringAlertsPanel({ managementEnabled }: { managementEnabled
       .filter(a => (filter === 'validated' ? a.validated : true))
       .filter(a => {
         const query = searchQuery.toLowerCase();
-  
-        const node = (a as any).nodeCaption || a.type || '';
-        const issue = (a as any).issue || '';
+        const node = (a as any).nodeCaption || '';
+        const issue = a.type || '';              // "issue" = existing display text
         const url = a.affectedSystem || '';
-  
         return (
           node.toLowerCase().includes(query) ||
           issue.toLowerCase().includes(query) ||
-          url.toLowerCase().includes(query) ||
-          // keep legacy behavior too
-          (a.type || '').toLowerCase().includes(query)
+          url.toLowerCase().includes(query)
         );
       });
   }, [alerts, filter, searchQuery]);
@@ -124,10 +120,11 @@ export function MonitoringAlertsPanel({ managementEnabled }: { managementEnabled
 }
 
 function AlertItem({ alert }: { alert: MonitoringAlert }) {
-  // Prefer new fields if present; fall back to existing 'type'
-  const node = (alert as any).nodeCaption || alert.type || 'Unknown';
-  const issue = (alert as any).issue || 'Alert';
-  const title = issue && issue !== node ? `${node} — ${issue}` : node;
+  // "issue" is the thing you already render (alert.type)
+  const issue = alert.type || 'Alert';
+  // Node caption is optional; show it first if provided by backend
+  const node = (alert as any).nodeCaption || '';
+  const title = node ? `${node} — ${issue}` : issue;
 
   return (
     <div className="flex items-start gap-3 text-sm">
@@ -150,9 +147,7 @@ function AlertItem({ alert }: { alert: MonitoringAlert }) {
         )}
 
         <div className="flex items-center gap-2 text-xs text-muted-foreground/80 mt-1">
-          <span>
-            {formatDistanceToNow(parseISO(alert.timestamp), { addSuffix: true })}
-          </span>
+          <span>{formatDistanceToNow(parseISO(alert.timestamp), { addSuffix: true })}</span>
           {alert.validated && (
             <>
               <span>&middot;</span>
