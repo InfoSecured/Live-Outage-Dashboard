@@ -120,11 +120,14 @@ export function MonitoringAlertsPanel({ managementEnabled }: { managementEnabled
 }
 
 function AlertItem({ alert }: { alert: MonitoringAlert }) {
-  // "issue" is the thing you already render (alert.type)
-  const issue = alert.type || 'Alert';
-  // Node caption is optional; show it first if provided by backend
-  const node = (alert as any).nodeCaption || '';
-  const title = node ? `${node} — ${issue}` : issue;
+  const issue = (alert.type || 'Alert').trim();
+  const node = ((alert as any).nodeCaption || '').trim();
+
+  // Only prefix when node is present AND not already at the start of issue
+  const title =
+    node && !issue.toLowerCase().startsWith(node.toLowerCase())
+      ? `${node} — ${issue}`
+      : issue || node || 'Alert';
 
   return (
     <div className="flex items-start gap-3 text-sm">
