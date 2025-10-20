@@ -42,6 +42,7 @@ export interface MonitoringAlert {
   timestamp: string; // ISO 8601 string
   severity: AlertSeverity;
   validated: boolean;
+  nodeCaption?: string;
 }
 export interface ServiceNowTicket {
   id: string;

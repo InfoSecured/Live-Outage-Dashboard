@@ -408,16 +408,18 @@ app.get('/api/monitoring/alerts', async (c) => {
 
   const url = `${config.apiUrl}/SolarWinds/InformationService/v3/Json/Query`;
 
-  // Primary (B): with TriggeredDateTime + Acknowledged (no TOP limit)
+  // Primary (B)
   const queryB =
-    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggeredDateTime, aa.Acknowledged " +
+    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, aa.TriggeredDateTime, aa.Acknowledged, " +
+    "       ao.AlertConfigurations.Name AS AlertName " +
     "FROM Orion.AlertActive AS aa " +
     "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
     "ORDER BY aa.TriggeredDateTime DESC";
-
-  // Fallback (A): simpler version if B fails (no TOP limit)
+  
+  // Fallback (A)
   const queryA =
-    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl " +
+    "SELECT aa.AlertObjectID, ao.EntityCaption, ao.EntityDetailsUrl, " +
+    "       ao.AlertConfigurations.Name AS AlertName " +
     "FROM Orion.AlertActive AS aa " +
     "JOIN Orion.AlertObjects AS ao ON aa.AlertObjectID = ao.AlertObjectID " +
     "ORDER BY aa.AlertObjectID DESC";
@@ -518,14 +520,21 @@ app.get('/api/monitoring/alerts', async (c) => {
       return !excludeList.some((term) => caption === term || caption.startsWith(term));
     });
 
-    const alerts: MonitoringAlert[] = rows.map((r) => ({
-      id: String(r.AlertObjectID),
-      type: r.EntityCaption || 'Unknown',
-      affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
-      timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
-      severity: 'Info',
-      validated: Boolean(r.Acknowledged ?? false),
-    }));
+    const alerts: MonitoringAlert[] = rows.map((r) => {
+      const nodeCaption = r.EntityCaption || 'Unknown';
+      const issue = r.AlertName || 'Alert';
+      return {
+        id: String(r.AlertObjectID),
+        // keep existing field for backward-compat
+        type: nodeCaption,
+        nodeCaption,
+        issue,
+        affectedSystem: toAbsoluteUrl(r.EntityDetailsUrl),
+        timestamp: new Date(r.TriggeredDateTime ?? Date.now()).toISOString(),
+        severity: 'Info',
+        validated: Boolean(r.Acknowledged ?? false),
+      };
+    });
 
     return ok(c, alerts);
   } catch (err) {

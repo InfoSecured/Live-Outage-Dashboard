@@ -50,15 +50,16 @@ export function MonitoringAlertsPanel({ managementEnabled }: { managementEnabled
 
   const filteredAlerts = useMemo(() => {
     return alerts
-      .filter(alert => {
-        if (filter === 'validated') return alert.validated;
-        return true;
-      })
-      .filter(alert => {
+      .filter(a => (filter === 'validated' ? a.validated : true))
+      .filter(a => {
         const query = searchQuery.toLowerCase();
+        const node = (a as any).nodeCaption || '';
+        const issue = a.type || '';              // "issue" = existing display text
+        const url = a.affectedSystem || '';
         return (
-          alert.affectedSystem.toLowerCase().includes(query) ||
-          alert.type.toLowerCase().includes(query)
+          node.toLowerCase().includes(query) ||
+          issue.toLowerCase().includes(query) ||
+          url.toLowerCase().includes(query)
         );
       });
   }, [alerts, filter, searchQuery]);
@@ -119,12 +120,32 @@ export function MonitoringAlertsPanel({ managementEnabled }: { managementEnabled
 }
 
 function AlertItem({ alert }: { alert: MonitoringAlert }) {
+  // "issue" is the thing you already render (alert.type)
+  const issue = alert.type || 'Alert';
+  // Node caption is optional; show it first if provided by backend
+  const node = (alert as any).nodeCaption || '';
+  const title = node ? `${node} — ${issue}` : issue;
+
   return (
     <div className="flex items-start gap-3 text-sm">
       <StatusIndicator status={alert.severity} className="mt-1" />
-      <div>
-        <p className="font-medium text-foreground">{alert.type}</p>
-        <p className="text-muted-foreground"><a href={alert.affectedSystem} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline break-all">{alert.affectedSystem}</a></p>
+      <div className="min-w-0">
+        <p className="font-medium text-foreground truncate">{title}</p>
+
+        {alert.affectedSystem && (
+          <p className="text-muted-foreground">
+            <a
+              href={alert.affectedSystem}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:underline break-all"
+              title="Open in SolarWinds"
+            >
+              {alert.affectedSystem}
+            </a>
+          </p>
+        )}
+
         <div className="flex items-center gap-2 text-xs text-muted-foreground/80 mt-1">
           <span>{formatDistanceToNow(parseISO(alert.timestamp), { addSuffix: true })}</span>
           {alert.validated && (
