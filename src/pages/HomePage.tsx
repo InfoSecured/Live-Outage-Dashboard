@@ -12,91 +12,75 @@ import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import RefreshControls from '../components/RefreshControls';
 
 export function HomePage() {
-  // STATE DECLARATIONS - MUST come first!
   const [managementEnabled, setManagementEnabled] = useState(false);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(5);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Check management status on mount
+  // NEW: a token that increments on every refresh
+  const [refreshTick, setRefreshTick] = useState(0);
+
   useEffect(() => {
     const checkManagementEnabled = async () => {
       try {
         const response = await fetch('/api/config');
         const data = await response.json();
         setManagementEnabled(data.enableManagement);
-      } catch (error) {
-        console.error('Failed to check management status:', error);
+      } catch {
         setManagementEnabled(false);
       }
     };
-    
     checkManagementEnabled();
   }, []);
-  
-  // Load saved auto-refresh settings
+
   useEffect(() => {
     const savedEnabled = localStorage.getItem('autoRefreshEnabled');
     const savedInterval = localStorage.getItem('autoRefreshInterval');
-    
-    if (savedEnabled !== null) {
-      setAutoRefreshEnabled(savedEnabled === 'true');
-    }
+    if (savedEnabled !== null) setAutoRefreshEnabled(savedEnabled === 'true');
     if (savedInterval !== null) {
-      const interval = parseInt(savedInterval, 10);
-      if (!isNaN(interval) && interval > 0) {
-        setRefreshInterval(interval);
-      }
+      const iv = parseInt(savedInterval, 10);
+      if (!isNaN(iv) && iv > 0) setRefreshInterval(iv);
     }
   }, []);
-  
-  // Fetch data callback
+
   const fetchData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      // The panels handle their own data fetching
-      // This just triggers a refresh state for the UI
-      await new Promise(resolve => setTimeout(resolve, 500));
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
+      // Panels will react to refreshTick changing
+      setRefreshTick((t) => t + 1);
+      // tiny delay so the spinner is visible (optional)
+      await new Promise((r) => setTimeout(r, 250));
     } finally {
       setIsRefreshing(false);
     }
   }, []);
-  
-  // Initial data load
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-  
-  // Auto-refresh hook
+
   useAutoRefresh({
     enabled: autoRefreshEnabled,
     intervalMinutes: refreshInterval,
     onRefresh: fetchData,
   });
-  
-  // Event handlers
+
   const handleRefreshToggle = (enabled: boolean) => {
     setAutoRefreshEnabled(enabled);
     localStorage.setItem('autoRefreshEnabled', enabled.toString());
-    
-    if (enabled) {
-      fetchData();
-    }
+    if (enabled) fetchData();
   };
-  
+
   const handleIntervalChange = (minutes: number) => {
     setRefreshInterval(minutes);
     localStorage.setItem('autoRefreshInterval', minutes.toString());
   };
-  
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Header />
-        
-        {/* Refresh Controls */}
+
         <div className="mb-6">
           <RefreshControls
             onRefreshToggle={handleRefreshToggle}
@@ -108,21 +92,22 @@ export function HomePage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Content Column */}
           <div className="lg:col-span-2 space-y-6">
-            <ActiveOutagesPanel managementEnabled={managementEnabled} />
-            <ScheduledChangesPanel managementEnabled={managementEnabled} />
-            <OutageTrendsPanel />
+            {/* PASS refreshTick into panels that should re-fetch */}
+            <ActiveOutagesPanel managementEnabled={managementEnabled} refreshTick={refreshTick} />
+            <ScheduledChangesPanel managementEnabled={managementEnabled} refreshTick={refreshTick} />
+            <OutageTrendsPanel refreshTick={refreshTick} />
           </div>
-          {/* Sidebar Column */}
+
           <div className="lg:col-span-1 space-y-6">
-            <ActiveCollaborationBridgesPanel managementEnabled={managementEnabled} />
-            <VendorStatusPanel managementEnabled={managementEnabled} />
-            <MonitoringAlertsPanel managementEnabled={managementEnabled} />
-            <ServiceNowTicketsPanel />
+            <ActiveCollaborationBridgesPanel managementEnabled={managementEnabled} refreshTick={refreshTick} />
+            <VendorStatusPanel managementEnabled={managementEnabled} refreshTick={refreshTick} />
+            <MonitoringAlertsPanel managementEnabled={managementEnabled} refreshTick={refreshTick} />
+            <ServiceNowTicketsPanel refreshTick={refreshTick} />
           </div>
         </div>
       </main>
+
       <footer className="text-center py-4 text-muted-foreground text-sm">
         <p>Built with ❤️ at Cloudflare</p>
       </footer>
