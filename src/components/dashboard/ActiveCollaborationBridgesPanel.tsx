@@ -2,18 +2,15 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { DataCard } from './DataCard';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { Phone, Users, Zap, Settings } from 'lucide-react';
+import { Phone, Users, Zap } from 'lucide-react';
 import type { CollaborationBridge } from '@shared/types';
 import { api } from '@/lib/api-client';
 import { Toaster, toast } from '@/components/ui/sonner';
 import { useDashboardStore } from '@/stores/dashboard-store';
 import { cn } from '@/lib/utils';
 import { useShallow } from 'zustand/react/shallow';
-import { ManageBridgesSheet } from './ManageBridgesSheet';
-
 export function ActiveCollaborationBridgesPanel() {
   const [bridges, setBridges] = useState<CollaborationBridge[]>([]);
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const { searchQuery, refreshCounter } = useDashboardStore(
     useShallow((state) => ({
@@ -21,7 +18,7 @@ export function ActiveCollaborationBridgesPanel() {
       refreshCounter: state.refreshCounter,
     }))
   );
-  const fetchBridges = React.useCallback(async () => {
+  useEffect(() => {
     const fetchBridges = async () => {
       try {
         setIsLoading(true);
@@ -35,11 +32,7 @@ export function ActiveCollaborationBridgesPanel() {
       }
     };
     fetchBridges();
-  }, []);
-
-  useEffect(() => {
-    fetchBridges();
-  }, [refreshCounter, fetchBridges]);
+  }, [refreshCounter]);
   const filteredBridges = useMemo(() => {
     return bridges.filter(bridge => {
       const query = searchQuery.toLowerCase();
@@ -47,34 +40,20 @@ export function ActiveCollaborationBridgesPanel() {
     });
   }, [bridges, searchQuery]);
   return (
-    <>
-      <DataCard
-        title="Active Bridges"
-        icon={Phone}
-        className="lg:col-span-1"
-        contentClassName="pt-2"
-        actions={
-          <Button variant="ghost" size="sm" className="gap-2" onClick={() => setIsSheetOpen(true)}>
-            <Settings className="size-4" />
-            Manage
-          </Button>
-        }
-      >
-        <Toaster richColors />
-        <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1 -mr-2">
-          {isLoading ? (
-            Array.from({ length: 3 }).map((_, i) => <BridgeSkeleton key={i} />)
-          ) : filteredBridges.length > 0 ? (
-            filteredBridges.map((bridge) => <BridgeItem key={bridge.id} bridge={bridge} />)
-          ) : (
-            <div className="text-center text-muted-foreground py-8">
-              <p>No active collaboration bridges.</p>
-            </div>
-          )}
-        </div>
-      </DataCard>
-      <ManageBridgesSheet isOpen={isSheetOpen} onOpenChange={setIsSheetOpen} onBridgesUpdate={fetchBridges} />
-    </>
+    <DataCard title="Active Bridges" icon={Phone} className="lg:col-span-1" contentClassName="pt-2">
+      <Toaster richColors />
+      <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1 -mr-2">
+        {isLoading ? (
+          Array.from({ length: 3 }).map((_, i) => <BridgeSkeleton key={i} />)
+        ) : filteredBridges.length > 0 ? (
+          filteredBridges.map((bridge) => <BridgeItem key={bridge.id} bridge={bridge} />)
+        ) : (
+          <div className="text-center text-muted-foreground py-8">
+            <p>No active collaboration bridges.</p>
+          </div>
+        )}
+      </div>
+    </DataCard>
   );
 }
 function BridgeItem({ bridge }: { bridge: CollaborationBridge }) {

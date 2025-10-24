@@ -17,7 +17,7 @@ import {
 import type { ImpactLevel } from '@shared/types';
 import { ThemeToggle } from '../ThemeToggle';
 import { useShallow } from 'zustand/react/shallow';
-const ALL_IMPACT_LEVELS: ImpactLevel[] = ['Outage', 'Degradation'];
+const ALL_IMPACT_LEVELS: ImpactLevel[] = ['SEV1', 'SEV2', 'SEV3', 'Degraded'];
 export function Header() {
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [isRefreshing, setIsRefreshing] = useState(false);
