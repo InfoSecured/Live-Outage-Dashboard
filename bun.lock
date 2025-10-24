@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "v1-aegis-outage-dashboa-2cecf578-6d3c-4ae6-aff0-0571f33d7360",
+      "name": "v1-aegis-outage-dashboa-e5613e7b-ddb9-490d-a08d-fa542c405a99",
       "dependencies": {
         "@dnd-kit/core": "^6.3.1",
         "@dnd-kit/sortable": "^10.0.0",

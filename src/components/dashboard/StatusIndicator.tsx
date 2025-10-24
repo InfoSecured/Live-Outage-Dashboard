@@ -6,9 +6,11 @@ const indicatorVariants = cva("size-2.5 rounded-full flex-shrink-0", {
       // Vendor Status
       Operational: "bg-green-500",
       Degraded: "bg-yellow-500",
+      Outage: "bg-red-500",
       // Outage Impact
-      Outage: "bg-red-600",
-      Degradation: "bg-yellow-500",
+      SEV1: "bg-red-600",
+      SEV2: "bg-orange-500",
+      SEV3: "bg-yellow-500",
       // Alert Severity
       Critical: "bg-red-500",
       Warning: "bg-yellow-500",
